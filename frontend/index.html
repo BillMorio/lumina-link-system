@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lumina Link System</title>
+<style>
+:root{--bg:#0f1115;--surface:#1a1d22;--line:#2b2f37;--ink:#eef0f3;--ink2:#b3b8c2;--ink3:#868c98;--accent:#2a78d6;--ok:#16a34a;--warn:#eb6834;}
+*{box-sizing:border-box;}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 "Segoe UI",system-ui,sans-serif;}
+.wrap{max-width:1040px;margin:0 auto;padding:24px 18px 60px;}
+h1{font-size:22px;margin:0 0 2px;}.sub{color:var(--ink3);font-size:13px;margin:0 0 18px;}
+.bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:16px;}
+input,select{background:#0f1115;border:1px solid var(--line);color:var(--ink);border-radius:7px;padding:7px 9px;font:inherit;}
+input{min-width:120px;}
+button{background:var(--accent);border:0;color:#fff;border-radius:7px;padding:8px 13px;font:600 13px inherit;cursor:pointer;}
+button.ghost{background:transparent;border:1px solid var(--line);color:var(--ink);}
+.pill{font:600 11px inherit;padding:2px 8px;border-radius:999px;}
+.pill.ok{background:#16a34a22;color:#43d17f;}.pill.bad{background:#ef444422;color:#f87171;}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:12px;}
+h2{font-size:15px;margin:0 0 10px;color:var(--ink2);}
+table{width:100%;border-collapse:collapse;font-size:13px;}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap;}
+th{color:var(--ink3);font-weight:600;font-size:12px;}
+td.r,th.r{text-align:right;}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;}
+.muted{color:var(--ink3);font-size:12px;}
+a{color:var(--accent);}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Lumina Link System</h1>
+  <p class="sub">Link-centric engagement tracker · new schema</p>
+
+  <div class="bar">
+    <span class="muted">API</span>
+    <input id="api" placeholder="https://your-api.onrender.com" style="flex:1;min-width:240px">
+    <button id="connect">Connect</button>
+    <span id="status" class="pill bad">not connected</span>
+  </div>
+
+  <div class="card">
+    <h2>Add a link</h2>
+    <div class="row">
+      <input id="l_url" placeholder="post URL" style="flex:1;min-width:220px">
+      <select id="l_platform"><option>instagram</option><option>facebook</option><option>tiktok</option><option>youtube</option></select>
+      <input id="l_tv" type="number" placeholder="target views" style="width:130px">
+      <input id="l_tl" type="number" placeholder="target likes" style="width:130px">
+      <input id="l_tc" type="number" placeholder="target comments" style="width:150px">
+      <button id="addlink">Add link</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Links <span id="lcount" class="muted"></span></h2>
+    <div style="overflow-x:auto"><table id="links"><thead><tr>
+      <th>ID</th><th>Platform</th><th>URL</th>
+      <th class="r">Views (a/t)</th><th class="r">Likes (a/t)</th><th class="r">Comments (a/t)</th><th></th>
+    </tr></thead><tbody></tbody></table></div>
+  </div>
+
+  <div class="card" id="detailcard" style="display:none">
+    <h2 id="dtitle">Link</h2>
+    <div class="grid" id="dstats"></div>
+    <h2 style="margin-top:14px">Orders</h2>
+    <div style="overflow-x:auto"><table id="orders"><thead><tr>
+      <th>ID</th><th>Kind</th><th>Source</th><th class="r">Target</th><th class="r">Delivered</th><th>State</th><th>Provider</th>
+    </tr></thead><tbody></tbody></table></div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let API = localStorage.getItem('lls_api') || '';
+$('#api').value = API;
+
+async function jget(p){ const r = await fetch(API+p); if(!r.ok) throw new Error(await r.text()); return r.json(); }
+async function jpost(p,b){ const r = await fetch(API+p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}); if(!r.ok) throw new Error(await r.text()); return r.json(); }
+
+async function health(){
+  try{ const d = await jget('/health'); $('#status').className='pill ok'; $('#status').textContent='connected · '+(d.counts?.links??0)+' links'; return true; }
+  catch(e){ $('#status').className='pill bad'; $('#status').textContent='not connected'; return false; }
+}
+async function loadLinks(){
+  const d = await jget('/api/links'); const tb = $('#links tbody'); tb.innerHTML='';
+  $('#lcount').textContent = '· '+d.links.length;
+  for(const l of d.links){
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${l.id}</td><td>${l.platform}</td><td><a href="${l.url}" target="_blank">${(l.url||'').slice(0,42)}</a></td>
+      <td class="r">${l.actual_views}/${l.target_views}</td><td class="r">${l.actual_likes}/${l.target_likes}</td>
+      <td class="r">${l.actual_comments}/${l.target_comments}</td>
+      <td><button class="ghost" data-id="${l.id}">open</button></td>`;
+    tb.appendChild(tr);
+  }
+  tb.querySelectorAll('button[data-id]').forEach(b=> b.onclick=()=>openLink(b.dataset.id));
+}
+async function openLink(id){
+  const d = await jget('/api/links/'+id); const l = d.link;
+  $('#detailcard').style.display='block';
+  $('#dtitle').textContent = `Link #${l.id} · ${l.platform}`;
+  $('#dstats').innerHTML = [
+    ['Views', `${l.actual_views} / ${l.target_views}`],['Likes', `${l.actual_likes} / ${l.target_likes}`],
+    ['Comments', `${l.actual_comments} / ${l.target_comments}`],['Orders', d.orders.length],['Snapshots', d.snapshots.length]
+  ].map(s=>`<div class="card" style="margin:0"><div class="muted">${s[0]}</div><div style="font-size:19px;font-weight:700">${s[1]}</div></div>`).join('');
+  const tb = $('#orders tbody'); tb.innerHTML = d.orders.map(o=>`<tr><td>${o.id}</td><td>${o.kind}</td><td>${o.source}</td>
+    <td class="r">${o.target_qty}</td><td class="r">${o.delivered}</td><td>${o.state}</td><td>${o.provider||''}</td></tr>`).join('')
+    || '<tr><td colspan="7" class="muted">no orders yet</td></tr>';
+  $('#detailcard').scrollIntoView({behavior:'smooth'});
+}
+
+$('#connect').onclick = async ()=>{ API = $('#api').value.replace(/\/$/,''); localStorage.setItem('lls_api',API); if(await health()) loadLinks(); };
+$('#addlink').onclick = async ()=>{
+  try{
+    await jpost('/api/links',{url:$('#l_url').value,platform:$('#l_platform').value,
+      target_views:+$('#l_tv').value||0,target_likes:+$('#l_tl').value||0,target_comments:+$('#l_tc').value||0});
+    $('#l_url').value=''; await health(); await loadLinks();
+  }catch(e){ alert('Add failed: '+e.message); }
+};
+if(API){ health().then(ok=>{ if(ok) loadLinks(); }); }
+</script>
+</body>
+</html>
