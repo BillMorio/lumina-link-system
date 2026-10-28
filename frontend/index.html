@@ -72,7 +72,7 @@ a{color:var(--accent);}
 
 <script>
 const $ = s => document.querySelector(s);
-let API = localStorage.getItem('lls_api') || '';
+let API = localStorage.getItem('lls_api') || 'https://lumina-link-system-api.onrender.com';
 $('#api').value = API;
 
 async function jget(p){ const r = await fetch(API+p); if(!r.ok) throw new Error(await r.text()); return r.json(); }
