@@ -4768,6 +4768,7 @@
       .then(function () { toast("Tracker refreshed.", "ok"); return loadTracker(ac.id); });
   }
   // ---- Phase 3: Creator accounts grid (top of this campaign's Creators tab) ----------------------
+  var ACC_MATURE_H = 48;   // matches the backend's TRACKER_MATURE_H default
   var ACC_TONE = { hot: "good", breakout: "info", established: "good", consistent: "muted", climber: "info", slow: "wait", under: "danger", early: "muted" };
   function loadAccounts(id) {
     if (ACC && ACC.campaign_id !== id) { ACC = null; renderAccounts(); }
@@ -4785,7 +4786,7 @@
     var types = ACC.types.filter(function (t) { return t.count; });
     el.innerHTML = '<div style="margin-bottom:14px">' +
       '<div class="dbar" style="margin-bottom:6px"><div><b style="font-size:14px">All ' + fmt(ACC.accounts.length) + ' account' + (ACC.accounts.length === 1 ? "" : "s") + '</b>' +
-        ' <span class="t2" style="font-size:12.5px">· one per creator per platform · orange bars are viral videos · campaign typical video ' + (ACC.campaign_median == null ? "—" : fmt(ACC.campaign_median)) + '</span></div></div>' +
+        ' <span class="t2" style="font-size:12.5px">· one per creator per platform · orange bars are viral videos, faded bars are under ' + ACC_MATURE_H + 'h old · campaign typical video ' + (ACC.campaign_median == null ? "—" : fmt(ACC.campaign_median)) + '</span></div></div>' +
       '<div class="filters" style="padding:0 0 10px;align-items:center">' +
         seg("cpl", [["", "All platforms"]].concat(ACC.platforms.map(function (p) { return [p, cap(p) + " " + fmt(byPl[p])]; })), DT.cpl) +
         '<select class="chip" data-vf="cty" aria-label="Account type">' + opt("", "All types", DT.cty) + types.map(function (t) { return opt(t.key, t.name + " (" + t.count + ")", DT.cty); }).join("") + '</select>' +
@@ -4800,7 +4801,7 @@
     var n = series.length, max = Math.max.apply(null, series.map(function (s) { return s.views || 0; })) || 1, w = 200 / n, g = "";
     series.forEach(function (s, i) {
       var h = Math.max(1, Math.round((s.views || 0) / max * 38));
-      g += '<rect x="' + (i * w + w * 0.12).toFixed(2) + '" y="' + (40 - h) + '" width="' + Math.max(0.8, w * 0.76).toFixed(2) + '" height="' + h + '" fill="' + (s.viral ? "#f08c00" : "#3b74d0") + '"/>';
+      g += '<rect x="' + (i * w + w * 0.12).toFixed(2) + '" y="' + (40 - h) + '" width="' + Math.max(0.8, w * 0.76).toFixed(2) + '" height="' + h + '" fill="' + (s.viral ? "#f08c00" : "#3b74d0") + '"' + (s.mature === false ? ' fill-opacity="0.35"' : '') + '/>';
     });
     return '<svg viewBox="0 0 200 40" preserveAspectRatio="none" role="img" aria-label="Views per video">' + g + '</svg>';
   }
@@ -4811,7 +4812,8 @@
       '<div>' + st(ACC_TONE[a.type] || "muted", a.type_name) + '</div>' +
       '<div style="display:flex;align-items:baseline;gap:8px"><span class="an">' + kfmt(a.views) + '</span><span class="t2" style="font-size:12.5px">' + (a.viral ? nWord(a.viral, "viral") : "no virals") + '</span></div>' +
       acSpark(a.series) +
-      '<div class="t2" style="font-size:12px">' + nWord(a.videos, "video") + (a.avg != null ? " · avg " + kfmt(a.avg) : "") + (reach ? " · " + reach : "") + '</div></div>';
+      '<div class="t2" style="font-size:12px">' + nWord(a.videos, "video") + (a.avg != null ? " · avg " + kfmt(a.avg) : "") + (reach ? " · " + reach : "") +
+        (a.young ? " · " + fmt(a.young) + " under " + ACC_MATURE_H + "h old (faded, not judged yet)" : "") + '</div></div>';
   }
   function niceMax(m) {
     var p = Math.pow(10, Math.floor(Math.log10(m))), k = [1, 2, 2.5, 5, 10].find(function (x) { return m <= x * p; });

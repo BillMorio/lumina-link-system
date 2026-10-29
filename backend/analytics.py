@@ -8,6 +8,7 @@ from __future__ import annotations
 import datetime as dt
 import os
 import statistics
+import time
 from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
@@ -30,24 +31,41 @@ def acct_key(l: dict) -> str:
     return f"{l.get('creator_name') or '?'}|{l.get('platform') or 'other'}"
 
 
-def mark_viral(links: list[dict]) -> None:
-    """Sets l["viral"] and l["normal"] (the account's normal reach before that video)."""
+MATURE_SEC = int(float(os.getenv("TRACKER_MATURE_H", "48")) * 3600)   # younger videos are still collecting views
+
+
+def is_mature(l: dict, now: float) -> bool:
+    up = l.get("uploaded_at")
+    return up is None or now - up >= MATURE_SEC
+
+
+def mark_viral(links: list[dict], now: float | None = None) -> None:
+    """Sets l["viral"], l["normal"] (the account's normal reach for that video) and l["mature"].
+    normal = the higher of (a) the earlier videos' form: max(median of up to 8, median of last 3) — so a
+    steady ramp is not a spike — and (b) the median of the account's OTHER videos — so a spike early in a
+    short series still stands out. Only mature videos (>= MATURE_SEC old) shape normal; a video is judged
+    once the account has 2+ other mature videos (3 in all)."""
+    now = time.time() if now is None else now
     by: dict[str, list[dict]] = {}
     for l in links:
         by.setdefault(acct_key(l), []).append(l)
     for vids in by.values():
         vids.sort(key=lambda l: (l.get("uploaded_at") is None, l.get("uploaded_at") or 0))
-        prior: list[int] = []
         for l in vids:
+            l["mature"] = is_mature(l, now)
+        ripe = [(i, l["views"]) for i, l in enumerate(vids) if l.get("views") is not None and l["mature"]]
+        for i, l in enumerate(vids):
             v = l.get("views")
-            # normal = the higher of the long median and the last-3 median: a creator who is steadily
-            # growing is judged against recent form, so a ramp is not mistaken for a viral spike
-            normal = max(statistics.median(prior[-VIRAL_WINDOW:]), statistics.median(prior[-3:])) \
-                if len(prior) >= VIRAL_MIN_PRIOR else None
+            others = [x for j, x in ripe if j != i]
+            prior = [x for j, x in ripe if j < i]
+            cand = []
+            if len(prior) >= 2:
+                cand.append(max(statistics.median(prior[-VIRAL_WINDOW:]), statistics.median(prior[-3:])))
+            if len(others) >= VIRAL_MIN_PRIOR - 1:
+                cand.append(statistics.median(others))
+            normal = max(cand) if cand else None
             l["normal"] = round(normal) if normal is not None else None
             l["viral"] = bool(v is not None and normal and v >= VIRAL_X * normal)
-            if v is not None:
-                prior.append(v)
 
 
 # Account types (Phase 3) — names + blurbs from the client's forecast mock; rules classify REAL series.
@@ -85,7 +103,7 @@ def classify(views: list[int], viral: list[bool], camp_median: float | None) -> 
     if nv == 1:
         return "breakout"
     base = camp_median or _med(views) or 1
-    q = max(1, min(4, n // 3))
+    q = max(1, min(4, n // 2))   # early / late reach over half the series (max 4): one odd video can't decide it
     start, end = _med(views[:q]) or 0, _med(views[-q:]) or 0
     growth = end / start if start else (CLIMB_X if end else 1.0)
     rel = (_med(views) or 0) / base
@@ -104,11 +122,12 @@ def classify(views: list[int], viral: list[bool], camp_median: float | None) -> 
     return "under" if rel < SMALL_REL else "consistent"
 
 
-def accounts(links: list[dict]) -> dict:
-    """Creators grid: one card per account with its type, totals and per-video series."""
-    mark_viral(links)
-    counted = [l["views"] for l in links if l.get("views") is not None]
-    camp_median = _med(counted)
+def accounts(links: list[dict], now: float | None = None) -> dict:
+    """Creators grid: one card per account with its type, totals and per-video series.
+    Type and normal reach use mature videos only (young ones are still collecting views)."""
+    mark_viral(links, now)
+    counted = [l["views"] for l in links if l.get("views") is not None and l["mature"]]
+    camp_median = _med(counted) or _med([l["views"] for l in links if l.get("views") is not None])
     by: dict[str, list[dict]] = {}
     for l in links:
         by.setdefault(acct_key(l), []).append(l)
@@ -116,10 +135,12 @@ def accounts(links: list[dict]) -> dict:
     for key, vids in by.items():
         vids.sort(key=lambda l: (l.get("uploaded_at") is None, l.get("uploaded_at") or 0))
         c = [l for l in vids if l.get("views") is not None]
+        m = [l for l in c if l["mature"]]
+        mv, mf = [l["views"] for l in m], [bool(l.get("viral")) for l in m]
+        t = classify(mv, mf, camp_median)
         vs, vf = [l["views"] for l in c], [bool(l.get("viral")) for l in c]
-        t = classify(vs, vf, camp_median)
-        q = max(1, min(4, len(vs) // 3)) if vs else 1
-        nonv = [v for v, f in zip(vs, vf) if not f]
+        q = max(1, min(4, len(mv) // 2)) if mv else 1
+        nonv = [v for v, f in zip(mv, mf) if not f]
         s = lambda k: sum(l.get(k) or 0 for l in vids)   # noqa: E731
         out.append({"key": key, "creator": vids[0].get("creator_name") or "?", "platform": vids[0].get("platform") or "other",
                     "type": t, "type_name": TYPES[t][0], "videos": len(vids), "counted": len(c),
@@ -128,7 +149,8 @@ def accounts(links: list[dict]) -> dict:
                     "start_reach": round(_med(nonv[:q]) or 0) if nonv else None,
                     "end_reach": round(_med(nonv[-q:]) or 0) if nonv else None,
                     "likes": s("likes"), "comments": s("comments"), "shares": s("shares"),
-                    "series": [{"id": l["id"], "views": l["views"], "viral": bool(l.get("viral")),
+                    "mature": len(m), "young": len(c) - len(m),
+                    "series": [{"id": l["id"], "views": l["views"], "viral": bool(l.get("viral")), "mature": l["mature"],
                                 "day": et_day(l.get("uploaded_at"))} for l in c]})
     out.sort(key=lambda a: -a["views"])
     counts = {k: 0 for k in TYPE_ORDER}

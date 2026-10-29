@@ -48,11 +48,14 @@ async def _audit(who: str, action: str, target, detail=None) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    db.init_db()
+    import persist
     import pg
     import tracker
-    await pg.init()   # Phase 0 tracker store; tolerant if Postgres is down
-    tracker.start()   # Phase 1 snapshot worker (no-op while the store is down)
+    await pg.init()           # Phase 0 tracker store; tolerant if Postgres is down
+    await persist.restore()   # console SQLite back from Postgres before anything opens it
+    db.init_db()
+    persist.start()           # back the console SQLite up to Postgres every 30 s when it changed
+    tracker.start()           # Phase 1 snapshot worker (no-op while the store is down)
     score.load_overrides()
     stuck = campaigns.recover_stuck()
     if stuck:
@@ -63,6 +66,7 @@ async def lifespan(app: FastAPI):
     log.info("console API started")
     yield
     task.cancel()
+    await persist.shutdown()  # final backup: Render stops the old instance on every deploy
 
 
 app = FastAPI(title="Lumina Engagement Console", version="1.0", lifespan=lifespan)
@@ -757,8 +761,9 @@ async def tracker_snapshots(lid: int, _: str = Depends(require_auth)):
 async def tracker_status(_: str = Depends(require_auth)):
     import pg
     import tracker
+    import persist
     camps = await pg.list_campaigns() if pg.available() else []
-    return {"store": pg.available(), "worker": tracker.state,
+    return {"store": pg.available(), "worker": tracker.state, "console_backup": persist.state,
             "campaigns": [{"id": c["id"], "name": c["name"], "links": c["link_count"],
                            "refreshed_at": c.get("refreshed_at"), "error": c.get("refresh_error")} for c in camps]}
 
