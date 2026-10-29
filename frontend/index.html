@@ -4694,7 +4694,8 @@
       stat("Average per video", k.avg == null ? "—" : fmt(k.avg), pulled ? "pulled up by viral videos" : "mean of videos with counts") +
       stat("Typical video", k.median == null ? "—" : fmt(k.median), "median: what most videos get") +
       stat("Viral videos", fmt(k.viral), (k.viral_pct == null ? "—" : esc(k.viral_pct) + "% of videos") + " · ≥" + fmt(t.viral_x) + "x the creator's normal") +
-      stat("Likes · comments · shares", kfmt(k.likes) + " · " + kfmt(k.comments) + " · " + kfmt(k.shares), k.views ? "likes " + (Math.round(1000 * k.likes / k.views) / 10) + "% of views" : "") +
+      stat("Engagement", '<span style="font-size:20px">' + kfmt(k.likes) + " · " + kfmt(k.comments) + " · " + kfmt(k.shares) + '</span>',
+        "likes · comments · shares" + (k.views ? " · likes " + (Math.round(1000 * k.likes / k.views) / 10) + "% of views" : "")) +
       '</div>';
     var post = DT.trk !== "gained", pl = t.platforms;
     var cols = t.days.map(function (d) {
@@ -4740,8 +4741,8 @@
       act.forEach(function (p) { g += '<circle cx="' + p[0] + '" cy="' + p[1] + '" r="3" fill="#1bab55"><title>' + esc(mday(p[2].day) + "\nViews so far: " + fmt(p[2].cumulative) + (p[2].goal_line != null ? "\nGoal path: " + fmt(p[2].goal_line) : "")) + '</title></circle>'; });
     }
     if (goal.length > 1) g += '<polyline points="' + goal.join(" ") + '" fill="none" stroke="#0f1216" stroke-width="1.5" stroke-dasharray="4 3"/>';
-    var every = Math.ceil(30 / cw * 1.6);
-    days.forEach(function (d, i) { if (i % every === 0 || d.today) g += '<text x="' + x(i) + '" y="' + (T + H + 14) + '" text-anchor="middle"' + (d.today ? ' style="fill:#1bab55;font-weight:700"' : '') + '>' + esc(mday(d.day)) + '</text>'; });
+    var every = Math.ceil(30 / cw * 1.6), ti = days.findIndex(function (d) { return d.today; });
+    days.forEach(function (d, i) { if ((i % every === 0 && (ti < 0 || Math.abs(i - ti) >= every)) || i === ti) g +='<text x="' + x(i) + '" y="' + (T + H + 14) + '" text-anchor="middle"' + (d.today ? ' style="fill:#1bab55;font-weight:700"' : '') + '>' + esc(mday(d.day)) + '</text>'; });
     return '<div class="chart"><svg width="' + W + '" height="' + (T + H + B) + '" viewBox="0 0 ' + W + ' ' + (T + H + B) + '" style="width:' + W + 'px" role="img" aria-label="Running total">' + g + '</svg></div>';
   }
   function trkImport() {
@@ -4769,7 +4770,7 @@
     var top = niceMax(max || 1), y = function (v) { return T + H - v / top * H; }, f = o.money ? function (v) { return "$" + kfmt(v); } : kfmt, g = "";
     cols.forEach(function (c, i) { if (c.shade) g += '<rect x="' + (L + i * cw) + '" y="' + T + '" width="' + cw + '" height="' + H + '" fill="#f4f5f7"/>'; });
     for (var i = 0; i <= 4; i++) { var v = top * i / 4; g += '<line x1="' + L + '" x2="' + W + '" y1="' + y(v) + '" y2="' + y(v) + '" stroke="#e5e8ec"/><text x="' + (L - 6) + '" y="' + (y(v) + 3) + '" text-anchor="end">' + f(v) + '</text>'; }
-    var every = Math.ceil(30 / cw * 1.6);
+    var every = Math.ceil(30 / cw * 1.6), hi = cols.findIndex(function (c) { return c.hl; });   // no label crowding the highlighted (today) one
     cols.forEach(function (c, i) {
       var x = L + i * cw, acc = 0, bw = Math.max(6, Math.min(28, cw - 10));
       g += '<g><title>' + esc(c.tip) + '</title><rect x="' + x + '" y="' + T + '" width="' + cw + '" height="' + H + '" fill="transparent"/>';
@@ -4779,7 +4780,7 @@
         acc += v;
       });
       g += '</g>';
-      if (i % every === 0 || c.hl) g += '<text x="' + (x + cw / 2) + '" y="' + (T + H + 14) + '" text-anchor="middle"' + (c.hl ? ' style="fill:#1bab55;font-weight:700"' : '') + '>' + esc(c.label) + '</text>';
+      if ((i % every === 0 && (hi < 0 || Math.abs(i - hi) >= every)) || c.hl) g += '<text x="' + (x + cw / 2) + '" y="' + (T + H + 14) + '" text-anchor="middle"' + (c.hl ? ' style="fill:#1bab55;font-weight:700"' : '') + '>' + esc(c.label) + '</text>';
     });
     var pts = cols.map(function (c, i) { return c.line == null ? null : (L + i * cw + cw / 2) + "," + y(c.line); }).filter(Boolean);
     if (pts.length > 1) g += '<polyline points="' + pts.join(" ") + '" fill="none" stroke="#0f1216" stroke-width="1.5" stroke-dasharray="4 3"/>';
