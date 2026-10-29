@@ -1553,11 +1553,9 @@ async def auto_dashboard(cid: int, _: str = Depends(require_auth)):
         _bad(e)
 
 
-@app.get("/api/auto/campaigns/{cid}/tracker")
-async def auto_tracker(cid: int, _: str = Depends(require_auth)):
-    """Phase 2: this automation campaign's live link analytics (Overview tab tracker panel).
-    Matched to tracker campaigns by (source, ref); several sources on one campaign are merged."""
-    import analytics
+async def _tracker_match(cid: int) -> tuple[dict, dict, list[dict]]:
+    """An automation campaign -> (camp, base payload, tracked tracker campaigns), matched by (source, ref);
+    several sources on one campaign are merged. base carries tracked/trackable/missing when nothing matches."""
     import pg
     import sources
     camp = await asyncio.to_thread(automation._camp, cid)
@@ -1569,20 +1567,40 @@ async def auto_tracker(cid: int, _: str = Depends(require_auth)):
         refs = []
     base = {"campaign_id": cid, "refs": [{"source": s, "ref": r} for s, r in refs]}
     if not refs:
-        return {**base, "tracked": False, "trackable": False}
+        return camp, {**base, "tracked": False, "trackable": False}, []
     if not pg.available():
         raise HTTPException(503, "tracker store (Postgres) is not available")
     found = [(s, r, await pg.find_campaign(s, r)) for s, r in refs]
     tracked = [t for _, _, t in found if t]
-    missing = [{"source": s, "ref": r} for s, r, t in found if not t]
+    base["missing"] = [{"source": s, "ref": r} for s, r, t in found if not t]
+    base["tracked"], base["trackable"] = bool(tracked), True
+    base["tracker"] = [{"id": t["id"], "name": t["name"], "source": t["source"], "ref": t["source_ref"], "links": t["link_count"],
+                        "refreshed_at": t.get("refreshed_at"), "error": t.get("refresh_error")} for t in tracked]
+    return camp, base, tracked
+
+
+@app.get("/api/auto/campaigns/{cid}/tracker")
+async def auto_tracker(cid: int, _: str = Depends(require_auth)):
+    """Phase 2: this automation campaign's live link analytics (Overview tab tracker panel)."""
+    import analytics
+    import pg
+    camp, base, tracked = await _tracker_match(cid)
     if not tracked:
-        return {**base, "tracked": False, "trackable": True, "missing": missing}
+        return base
     ids = [t["id"] for t in tracked]
     links, snaps = await pg.campaign_rows(ids), await pg.campaign_snapshots(ids)
-    ov = analytics.overview(links, snaps, camp["views_goal"], camp["start_date"], camp["end_date"], automation.BUFFER_DAYS)
-    return {**base, "tracked": True, "missing": missing, **ov,
-            "tracker": [{"id": t["id"], "name": t["name"], "source": t["source"], "ref": t["source_ref"], "links": t["link_count"],
-                         "refreshed_at": t.get("refreshed_at"), "error": t.get("refresh_error")} for t in tracked]}
+    return {**base, **analytics.overview(links, snaps, camp["views_goal"], camp["start_date"], camp["end_date"], automation.BUFFER_DAYS)}
+
+
+@app.get("/api/auto/campaigns/{cid}/tracker/accounts")
+async def auto_tracker_accounts(cid: int, _: str = Depends(require_auth)):
+    """Phase 3: Creators grid — one card per account (creator x platform) with its type + video series."""
+    import analytics
+    import pg
+    _, base, tracked = await _tracker_match(cid)
+    if not tracked:
+        return base
+    return {**base, **analytics.accounts(await pg.campaign_rows([t["id"] for t in tracked]))}
 
 
 @app.get("/api/auto/campaigns/{cid}/detail")

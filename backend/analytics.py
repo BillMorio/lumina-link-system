@@ -25,21 +25,118 @@ def _days(a: str, b: str) -> list[str]:
     return [(d0 + dt.timedelta(days=i)).isoformat() for i in range((d1 - d0).days + 1)] if d1 >= d0 else []
 
 
+def acct_key(l: dict) -> str:
+    """An account = one creator on one platform (IG and FB reach differ, so each gets its own normal + type)."""
+    return f"{l.get('creator_name') or '?'}|{l.get('platform') or 'other'}"
+
+
 def mark_viral(links: list[dict]) -> None:
-    """Sets l["viral"] and l["normal"] (the creator's normal reach before that video)."""
+    """Sets l["viral"] and l["normal"] (the account's normal reach before that video)."""
     by: dict[str, list[dict]] = {}
     for l in links:
-        by.setdefault(l.get("creator_name") or "?", []).append(l)
+        by.setdefault(acct_key(l), []).append(l)
     for vids in by.values():
         vids.sort(key=lambda l: (l.get("uploaded_at") is None, l.get("uploaded_at") or 0))
         prior: list[int] = []
         for l in vids:
             v = l.get("views")
-            normal = statistics.median(prior[-VIRAL_WINDOW:]) if len(prior) >= VIRAL_MIN_PRIOR else None
+            # normal = the higher of the long median and the last-3 median: a creator who is steadily
+            # growing is judged against recent form, so a ramp is not mistaken for a viral spike
+            normal = max(statistics.median(prior[-VIRAL_WINDOW:]), statistics.median(prior[-3:])) \
+                if len(prior) >= VIRAL_MIN_PRIOR else None
             l["normal"] = round(normal) if normal is not None else None
             l["viral"] = bool(v is not None and normal and v >= VIRAL_X * normal)
             if v is not None:
                 prior.append(v)
+
+
+# Account types (Phase 3) — names + blurbs from the client's forecast mock; rules classify REAL series.
+TYPES = {
+    "hot":         ("Multi-viral", "Hits often. Several breakouts stack on top of each other."),
+    "breakout":    ("Single breakout", "Quiet, then one video blows up and lifts everything after it."),
+    "established": ("Established mid-size", "Already has an audience. High, steady numbers with the odd viral."),
+    "consistent":  ("Consistent", "Same range every day. Very few surprises up or down."),
+    "climber":     ("Steady climber", "Starts small and grows a bit with every video."),
+    "slow":        ("Slow starter", "Tiny reach at first, then builds fast later on."),
+    "under":       ("Underperformer", "Low and flat. Content or account isn't landing."),
+    "early":       ("Too early", "Fewer than 3 videos with counts: not enough to judge yet."),
+}
+TYPE_ORDER = ["established", "consistent", "climber", "slow", "breakout", "hot", "under", "early"]
+CLIMB_X = 1.5        # late normal reach >= 1.5x early -> climbing
+SLOW_X = 3.0         # ... >= 3x and it started small -> slow starter
+SMALL_REL = 0.5      # "small" = below half the campaign's typical video
+UNDER_REL = 0.25     # "low" = below a quarter of the campaign's typical video
+ESTAB_REL = 1.5      # "high" = 1.5x the campaign's typical video
+STEADY_CV = 0.5      # spread (stdev / mean of non-viral views) at or under this = steady
+
+
+def _med(a: list[int]) -> float | None:
+    return statistics.median(a) if a else None
+
+
+def classify(views: list[int], viral: list[bool], camp_median: float | None) -> str:
+    """One account's videos (upload order, counted only) -> a TYPES key."""
+    n = len(views)
+    if n < VIRAL_MIN_PRIOR:
+        return "early"
+    nv = sum(viral)
+    if nv >= 2:
+        return "hot"
+    if nv == 1:
+        return "breakout"
+    base = camp_median or _med(views) or 1
+    q = max(1, min(4, n // 3))
+    start, end = _med(views[:q]) or 0, _med(views[-q:]) or 0
+    growth = end / start if start else (CLIMB_X if end else 1.0)
+    rel = (_med(views) or 0) / base
+    mean = sum(views) / n
+    cv = statistics.pstdev(views) / mean if mean else 0
+    if rel < UNDER_REL and growth < CLIMB_X:
+        return "under"
+    if growth >= SLOW_X and start / base < SMALL_REL:
+        return "slow"
+    if growth >= CLIMB_X:
+        return "climber"
+    if rel >= ESTAB_REL:
+        return "established"
+    if cv <= STEADY_CV:
+        return "consistent"
+    return "under" if rel < SMALL_REL else "consistent"
+
+
+def accounts(links: list[dict]) -> dict:
+    """Creators grid: one card per account with its type, totals and per-video series."""
+    mark_viral(links)
+    counted = [l["views"] for l in links if l.get("views") is not None]
+    camp_median = _med(counted)
+    by: dict[str, list[dict]] = {}
+    for l in links:
+        by.setdefault(acct_key(l), []).append(l)
+    out = []
+    for key, vids in by.items():
+        vids.sort(key=lambda l: (l.get("uploaded_at") is None, l.get("uploaded_at") or 0))
+        c = [l for l in vids if l.get("views") is not None]
+        vs, vf = [l["views"] for l in c], [bool(l.get("viral")) for l in c]
+        t = classify(vs, vf, camp_median)
+        q = max(1, min(4, len(vs) // 3)) if vs else 1
+        nonv = [v for v, f in zip(vs, vf) if not f]
+        s = lambda k: sum(l.get(k) or 0 for l in vids)   # noqa: E731
+        out.append({"key": key, "creator": vids[0].get("creator_name") or "?", "platform": vids[0].get("platform") or "other",
+                    "type": t, "type_name": TYPES[t][0], "videos": len(vids), "counted": len(c),
+                    "views": sum(vs), "viral": sum(vf), "best": max(vs) if vs else None,
+                    "avg": round(sum(vs) / len(vs)) if vs else None,
+                    "start_reach": round(_med(nonv[:q]) or 0) if nonv else None,
+                    "end_reach": round(_med(nonv[-q:]) or 0) if nonv else None,
+                    "likes": s("likes"), "comments": s("comments"), "shares": s("shares"),
+                    "series": [{"id": l["id"], "views": l["views"], "viral": bool(l.get("viral")),
+                                "day": et_day(l.get("uploaded_at"))} for l in c]})
+    out.sort(key=lambda a: -a["views"])
+    counts = {k: 0 for k in TYPE_ORDER}
+    for a in out:
+        counts[a["type"]] += 1
+    return {"accounts": out, "campaign_median": round(camp_median) if camp_median else None,
+            "types": [{"key": k, "name": TYPES[k][0], "short": TYPES[k][1], "count": counts[k]} for k in TYPE_ORDER],
+            "platforms": sorted({a["platform"] for a in out})}
 
 
 def gained_by_day(snaps: list[dict], uploaded: dict[int, int | None]) -> dict[str, int]:
