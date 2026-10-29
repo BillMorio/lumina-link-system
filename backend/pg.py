@@ -241,6 +241,14 @@ async def campaign_snapshots(cids: list[int]) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+async def get_link(lid: int) -> dict | None:
+    pool = await _require()
+    r = await pool.fetchrow(
+        """SELECT l.*, cr.name AS creator_name FROM tracker_links l
+           LEFT JOIN tracker_creators cr ON cr.id = l.creator_id WHERE l.id = $1""", lid)
+    return dict(r) if r else None
+
+
 async def get_campaign(cid: int) -> dict | None:
     pool = await _require()
     r = await pool.fetchrow("SELECT * FROM tracker_campaigns WHERE id = $1", cid)

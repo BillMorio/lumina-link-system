@@ -13,6 +13,7 @@ import io
 import random
 import json
 import logging
+import os
 import re
 import time
 from contextlib import asynccontextmanager
@@ -1595,6 +1596,62 @@ async def auto_tracker(cid: int, _: str = Depends(require_auth)):
     ids = [t["id"] for t in tracked]
     links, snaps = await pg.campaign_rows(ids), await pg.campaign_snapshots(ids)
     return {**base, **analytics.overview(links, snaps, camp["views_goal"], camp["start_date"], camp["end_date"], automation.BUFFER_DAYS)}
+
+
+STUCK_SEC = int(float(os.getenv("TRACKER_STUCK_H", "24")) * 3600)   # in flight longer than this = stuck
+_ORDER_BUCKET = {"completed": "fulfilled", "simulated": "practice", "ambiguous": "stuck", "blocked": "blocked",
+                 "failed": "failed", "cancelled": "failed", "retried": "failed"}
+
+
+def _bucket(o: dict, now: int) -> str:
+    st = o.get("state") or ""
+    if st in ("placing", "placed"):
+        return "stuck" if now - (o.get("created_at") or now) > STUCK_SEC else "in_progress"
+    return _ORDER_BUCKET.get(st, st or "unknown")
+
+
+@app.get("/api/auto/campaigns/{cid}/tracker/links/{lid}")
+async def auto_tracker_link(cid: int, lid: int, _: str = Depends(require_auth)):
+    """Phase 4 link detail: actual views over time (tracker) + the planner's target and observed views,
+    every order placed for this post (bucketed fulfilled / in progress / stuck / failed / practice) and the
+    comment lines posted on it. Joined to the console by its canonical post key (config.url_key)."""
+    import pg
+    from config import url_key as canon_key
+    _, base, tracked = await _tracker_match(cid)
+    link = await pg.get_link(lid) if tracked else None
+    if not link or link["campaign_id"] not in {t["id"] for t in tracked}:
+        raise HTTPException(404, "no such link on this campaign")
+    ck = canon_key(link["url"])
+    now = int(time.time())
+
+    def console():
+        post = db.q1("SELECT * FROM auto_posts WHERE campaign_id=? AND url_key=? ORDER BY id DESC LIMIT 1", (cid, ck))
+        orders = db.q("SELECT id, day, kind, provider, service, qty, est_cost, state, attempt, order_id, error, is_test, "
+                      "created_at, comments FROM auto_orders WHERE campaign_id=? AND url_key=? ORDER BY created_at DESC", (cid, ck))
+        lines = db.q("SELECT text, at, order_id FROM comment_used WHERE campaign_id=? AND url_key=? ORDER BY at", (cid, ck))
+        return post, orders, lines
+    post, orders, lines = await asyncio.to_thread(console)
+    for o in orders:
+        o["bucket"] = _bucket(o, now)
+        try:
+            o["comments"] = json.loads(o["comments"]) if o.get("comments") else None
+        except ValueError:
+            o["comments"] = None
+    summary: dict[str, dict] = {}
+    for o in orders:
+        b = summary.setdefault(o["bucket"], {"orders": 0, "qty": 0})
+        b["orders"] += 1
+        b["qty"] += o.get("qty") or 0
+    snaps = await pg.link_snapshots(lid)
+    last = snaps[-1] if snaps else {}
+    return {"campaign_id": cid, "canon_key": ck,
+            "link": {k: link.get(k) for k in ("id", "url", "platform", "creator_name", "title", "thumbnail", "uploaded_at")},
+            "actual": {k: last.get(k) for k in ("views", "likes", "comments", "shares", "t")},
+            "snapshots": snaps,
+            "post": None if not post else {k: post.get(k) for k in ("target_total", "observed_views", "observed_likes", "status",
+                                                                       "reason", "peak", "checked_at", "viral_state", "day")},
+            "orders": orders, "order_summary": summary, "stuck_h": STUCK_SEC // 3600,
+            "comments": [{"text": c["text"], "at": c["at"], "order_id": c["order_id"]} for c in lines]}
 
 
 @app.get("/api/auto/campaigns/{cid}/tracker/accounts")

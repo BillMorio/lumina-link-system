@@ -490,6 +490,15 @@
   .accard .ah b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .accard .an { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.1; }
   .accard svg { width: 100%; height: 40px; display: block; }
+  .accard[data-acct] { cursor: pointer; transition: border-color .12s, box-shadow .12s; }
+  .accard[data-acct]:hover { border-color: #b9c3d0; }
+  .accard.on { border-color: #3b74d0; box-shadow: 0 0 0 2px rgba(59,116,208,.18); }
+  .acdet { border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+  .lrow { display: grid; grid-template-columns: 74px 22px minmax(0,1fr) 90px 110px; gap: 10px; align-items: center; padding: 7px 4px; border-bottom: 1px solid var(--border); font-size: 13px; cursor: pointer; }
+  .lrow:hover { background: #f6f8fa; }
+  .otbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .otbl th, .otbl td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .otbl th { font-size: 11px; text-transform: uppercase; letter-spacing: .6px; color: var(--text-muted); }
   .vcard { border: 1px solid var(--border); border-radius: 12px; padding: 12px; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
   .vcard .who { display: flex; gap: 8px; align-items: center; min-width: 0; }
   .vcard .who .pf { width: 28px; height: 28px; border-radius: 8px; }
@@ -4784,7 +4793,8 @@
     var L = ACC.accounts.filter(function (a) { return (!DT.cpl || a.platform === DT.cpl) && (!DT.cty || a.type === DT.cty); });
     var byPl = {}; ACC.accounts.forEach(function (a) { byPl[a.platform] = (byPl[a.platform] || 0) + 1; });
     var types = ACC.types.filter(function (t) { return t.count; });
-    el.innerHTML = '<div style="margin-bottom:14px">' +
+    var sel = DT.acct && ACC.accounts.find(function (a) { return a.key === DT.acct; });
+    el.innerHTML = (sel ? acDetail(sel) : '') + '<div style="margin-bottom:14px">' +
       '<div class="dbar" style="margin-bottom:6px"><div><b style="font-size:14px">All ' + fmt(ACC.accounts.length) + ' account' + (ACC.accounts.length === 1 ? "" : "s") + '</b>' +
         ' <span class="t2" style="font-size:12.5px">· one per creator per platform · orange bars are viral videos, faded bars are under ' + ACC_MATURE_H + 'h old · campaign typical video ' + (ACC.campaign_median == null ? "—" : fmt(ACC.campaign_median)) + '</span></div></div>' +
       '<div class="filters" style="padding:0 0 10px;align-items:center">' +
@@ -4807,13 +4817,97 @@
   }
   function acCard(a) {
     var reach = a.start_reach != null && a.end_reach != null ? "normal reach " + kfmt(a.start_reach) + " → " + kfmt(a.end_reach) : "";
-    return '<div class="accard" title="' + esc(a.creator + " · " + cap(a.platform) + "\n" + fmt(a.views) + " views on " + nWord(a.counted, "video") + (a.best != null ? "\nBest video " + fmt(a.best) : "")) + '">' +
+    return '<div class="accard' + (DT.acct === a.key ? ' on' : '') + '" role="button" tabindex="0" data-acct="' + esc(a.key) + '" title="' + esc(a.creator + " · " + cap(a.platform) + "\n" + fmt(a.views) + " views on " + nWord(a.counted, "video") + (a.best != null ? "\nBest video " + fmt(a.best) : "") + "\nClick to open") + '">' +
       '<div class="ah"><b>' + esc(a.creator) + '</b><span style="color:' + plc(a.platform) + ';font-weight:700">' + esc(cap(a.platform)) + '</span></div>' +
       '<div>' + st(ACC_TONE[a.type] || "muted", a.type_name) + '</div>' +
       '<div style="display:flex;align-items:baseline;gap:8px"><span class="an">' + kfmt(a.views) + '</span><span class="t2" style="font-size:12.5px">' + (a.viral ? nWord(a.viral, "viral") : "no virals") + '</span></div>' +
       acSpark(a.series) +
       '<div class="t2" style="font-size:12px">' + nWord(a.videos, "video") + (a.avg != null ? " · avg " + kfmt(a.avg) : "") + (reach ? " · " + reach : "") +
         (a.young ? " · " + fmt(a.young) + " under " + ACC_MATURE_H + "h old (faded, not judged yet)" : "") + '</div></div>';
+  }
+  // ---- Phase 4: account detail (above the grid) + link detail dialog ---------------------------
+  var BUCKETS = [["stuck", "Stuck", "wait"], ["in_progress", "In progress", "info"], ["fulfilled", "Fulfilled", "good"],
+                 ["failed", "Failed", "danger"], ["blocked", "Blocked", "danger"], ["practice", "Practice (simulated)", "muted"]];
+  function acDetail(a) {
+    var S = a.series, w = Math.max(280, avail("dt-creators") - 30), w3 = Math.max(240, Math.floor((w - 28) / (window.innerWidth > 1100 ? 3 : 1)));
+    var t = (ACC.types.find(function (x) { return x.key === a.type; }) || {}).short || "";
+    var col = function (k, color) {
+      return S.map(function (s) { return { label: mday(s.day), line: k === "views" ? s.normal : null, stacks: [{ v: s[k], fill: k === "views" && s.viral ? "#f08c00" : color }],
+        tip: mday(s.day) + (s.mature ? "" : " (under " + ACC_MATURE_H + "h old)") + "\n" + cap(k) + ": " + fmt(s[k] || 0) + (k === "views" && s.normal ? "\nNormal reach: " + fmt(s.normal) + (s.viral ? "\nViral: " + Math.round(s.views / s.normal) + "x normal" : "") : "") }; });
+    };
+    var eng = a.views ? Math.round(1000 * a.likes / a.views) / 10 : null;
+    return '<div class="acdet"><div class="dbar" style="margin-bottom:4px"><div><b style="font-size:15px">' + esc(a.creator) + '</b> <span style="color:' + plc(a.platform) + ';font-weight:700">· ' + esc(cap(a.platform)) + '</span> ' + st(ACC_TONE[a.type] || "muted", a.type_name) + '</div>' +
+        '<button class="btn btn-ghost sm" type="button" data-acct-close>Close</button></div>' +
+      '<p class="hint" style="margin:0 0 10px">' + esc(t) + ' ' + nWord(a.videos, "video") + (a.young ? " (" + fmt(a.young) + " still under " + ACC_MATURE_H + "h old)" : "") + '.</p>' +
+      '<div class="stats" style="border:1px solid var(--border);border-radius:12px;margin-bottom:12px">' +
+        stat("Views", fmt(a.views), "across " + nWord(a.counted, "video") + " with counts") +
+        stat("Average per video", a.avg == null ? "—" : fmt(a.avg), a.best != null ? "best video " + fmt(a.best) : "") +
+        stat("Viral videos", fmt(a.viral), a.viral ? "≥" + fmt(TRK && TRK.viral_x || 6) + "x normal reach" : "none yet") +
+        stat("Normal reach", a.start_reach == null ? "—" : kfmt(a.start_reach) + " → " + kfmt(a.end_reach), "early vs late videos (viral and young ones left out)") +
+        stat("Engagement", kfmt(a.likes) + " · " + kfmt(a.comments) + " · " + kfmt(a.shares), "likes · comments · shares" + (eng != null ? " · likes " + eng + "% of views" : ""), "fit") +
+      '</div>' +
+      '<div class="legend"><span><i style="background:#3b74d0"></i>Regular video</span><span><i style="background:#f08c00"></i>Viral video</span>' +
+        '<span><i style="background:none;border-top:2px dashed #0f1216;border-radius:0;height:0;width:14px"></i>Normal reach</span></div>' +
+      '<b style="font-size:13px">Views per video</b>' + svgBars(col("views", "#3b74d0"), { w: w, label: "Views per video" }) +
+      '<div style="display:grid;grid-template-columns:' + (window.innerWidth > 1100 ? "1fr 1fr 1fr" : "1fr") + ';gap:14px;margin-top:6px">' +
+        ["likes", "comments", "shares"].map(function (k) { return '<div style="min-width:0"><b style="font-size:13px">' + cap(k) + '</b>' + svgBars(col(k, "#7a8fb0"), { w: w3, label: cap(k) + " per video" }) + '</div>'; }).join("") +
+      '</div>' +
+      '<div style="margin-top:12px"><b style="font-size:13px">Links</b> <span class="t2" style="font-size:12.5px">· newest first · click one for its orders, target vs actual and comments</span>' +
+        '<div style="margin-top:6px">' + S.slice().reverse().map(function (s) {
+          return '<div class="lrow" role="button" tabindex="0" data-link="' + s.id + '"><span class="t2">' + esc(mday(s.day)) + '</span>' + pf(a.platform) +
+            '<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(stripUrl(s.url || "")) + '</span>' +
+            '<b style="text-align:right">' + fmt(s.views) + '</b><span>' + (s.viral ? st("good", "Viral") : !s.mature ? st("muted", "Young") : "") + '</span></div>';
+        }).join("") + '</div></div></div>';
+  }
+  function svgSeries(pts, w, target) {   // a link's views over time (snapshots) with an optional target line
+    pts = pts.filter(function (p) { return p.views != null; });
+    if (pts.length < 2) return '<p class="hint">' + (pts.length ? "One reading so far: history fills in as the tracker re-reads this post." : "No readings yet.") + '</p>';
+    var L = 52, T = 10, H = 170, B = 22, W = Math.max(280, w), iw = W - L - 10, t0 = pts[0].t, t1 = pts[pts.length - 1].t || t0 + 1;
+    var max = Math.max(target || 0, Math.max.apply(null, pts.map(function (p) { return p.views; }))), top = niceMax(max || 1);
+    var x = function (t) { return L + (t - t0) / Math.max(1, t1 - t0) * iw; }, y = function (v) { return T + H - v / top * H; }, g = "";
+    for (var i = 0; i <= 4; i++) { var v = top * i / 4; g += '<line x1="' + L + '" x2="' + (L + iw) + '" y1="' + y(v) + '" y2="' + y(v) + '" stroke="#e5e8ec"/><text x="' + (L - 6) + '" y="' + (y(v) + 3) + '" text-anchor="end">' + kfmt(v) + '</text>'; }
+    if (target) g += '<line x1="' + L + '" x2="' + (L + iw) + '" y1="' + y(target) + '" y2="' + y(target) + '" stroke="#0f1216" stroke-width="1.5" stroke-dasharray="4 3"/>';
+    g += '<polyline points="' + pts.map(function (p) { return x(p.t) + "," + y(p.views); }).join(" ") + '" fill="none" stroke="#1bab55" stroke-width="2"/>';
+    pts.forEach(function (p) { g += '<circle cx="' + x(p.t) + '" cy="' + y(p.views) + '" r="3" fill="#1bab55"><title>' + esc(etTime(p.t) + "\nViews: " + fmt(p.views) + (p.likes != null ? "\nLikes: " + fmt(p.likes) : "")) + '</title></circle>'; });
+    var n = Math.min(6, pts.length); for (var j = 0; j < n; j++) { var tt = t0 + (t1 - t0) * j / Math.max(1, n - 1); g += '<text x="' + x(tt) + '" y="' + (T + H + 14) + '" text-anchor="' + (j === 0 ? "start" : j === n - 1 ? "end" : "middle") + '">' + esc(new Date(tt * 1000).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })) + '</text>'; }
+    return '<div class="chart"><svg width="' + W + '" height="' + (T + H + B) + '" viewBox="0 0 ' + W + ' ' + (T + H + B) + '" style="width:' + W + 'px" role="img" aria-label="Views over time">' + g + '</svg></div>';
+  }
+  function openLink(lid) {
+    var dl = dialog({ title: "Link detail", sub: "loading…", wide: true, cls: "xwide", body: '<div class="blk"><span class="sk" style="width:60%;height:22px"></span></div>', actions: [{ label: "Close" }] });
+    req("GET", "/api/auto/campaigns/" + ac.id + "/tracker/links/" + lid).then(function (r) { linkBody(dl, r); })
+      .catch(function (e) { setDlgBody(dl, blockFail(e, "Could not load this link", "link")); });
+  }
+  function setDlgBody(dl, html) { var b = dl.el.querySelector(".dlg-b"); if (b) b.innerHTML = html; }
+  function linkBody(dl, r) {
+    var l = r.link, a = r.actual || {}, p = r.post, tgt = p && p.target_total, pct = tgt ? Math.round(100 * (a.views || 0) / tgt) : null;
+    var w = Math.min(980, window.innerWidth - 120);
+    var sub = dl.el.querySelector(".dlg-h p"); if (sub) sub.textContent = (l.creator_name || "?") + " · " + cap(l.platform) + (l.uploaded_at ? " · posted " + etTime(l.uploaded_at) : "");
+    var groups = BUCKETS.filter(function (b) { return r.order_summary[b[0]]; });
+    var ord = r.orders.slice().sort(function (x, y) {
+      var ix = BUCKETS.findIndex(function (b) { return b[0] === x.bucket; }), iy = BUCKETS.findIndex(function (b) { return b[0] === y.bucket; });
+      return ix - iy || y.created_at - x.created_at;
+    });
+    var tone = function (b) { return (BUCKETS.find(function (x) { return x[0] === b; }) || [0, b, "muted"]); };
+    setDlgBody(dl,
+      '<div style="margin-bottom:8px">' + ulink(l.url) + '</div>' +
+      '<div class="stats" style="border:1px solid var(--border);border-radius:12px;margin-bottom:12px">' +
+        stat("Actual views", a.views == null ? "—" : fmt(a.views), a.t ? "read " + etTime(a.t) : "not read yet") +
+        stat("Planner target", tgt ? fmt(tgt) : "—", tgt ? pct + "% reached" + '<div class="bar" style="margin-top:6px;min-width:0"><i style="width:' + Math.min(100, pct) + '%"></i></div>' : (p ? "no target set for this post" : "the planner has not picked this post up yet"), "", true) +
+        stat("Engagement", kfmt(a.likes) + " · " + kfmt(a.comments) + " · " + kfmt(a.shares), "likes · comments · shares", "fit") +
+        stat("Orders", fmt(r.orders.length), groups.length ? groups.map(function (b) { return b[1] + " " + r.order_summary[b[0]].orders; }).join(" · ") : "none placed for this post") +
+      '</div>' +
+      '<b style="font-size:13px">Views over time</b> <span class="t2" style="font-size:12.5px">· tracker readings' + (tgt ? " · dashed = planner target" : "") + '</span>' + svgSeries(r.snapshots, w, tgt) +
+      '<div style="margin-top:12px"><b style="font-size:13px">Orders</b> <span class="t2" style="font-size:12.5px">· stuck first · "stuck" = panel unsure, or in flight over ' + fmt(r.stuck_h) + 'h</span>' +
+        (ord.length ? '<div style="overflow-x:auto;margin-top:6px"><table class="otbl"><thead><tr><th>Status</th><th>What</th><th>Qty</th><th>Panel · service</th><th>Placed</th><th>Panel order</th></tr></thead><tbody>' +
+          ord.map(function (o) { var tb = tone(o.bucket);
+            return '<tr><td>' + st(tb[2], tb[1]) + (o.error ? '<div class="t2" style="max-width:240px;white-space:normal">' + esc(o.error) + '</div>' : '') + '</td><td>' + esc(cap(o.kind)) + (o.is_test ? ' <span class="t2">(test)</span>' : '') +
+              ((o.comments || []).length ? '<details class="t2"><summary>' + fmt(o.comments.length) + ' lines</summary>' + o.comments.map(function (c) { return '<div>' + esc(c) + '</div>'; }).join("") + '</details>' : '') +
+              '</td><td>' + fmt(o.qty) + '</td><td>' + esc(provLabel(o.provider || "") + " · " + (o.service || "")) + '</td><td>' + esc(etTime(o.created_at)) + '</td><td class="t2">' + esc(o.order_id || "—") + '</td></tr>'; }).join("") +
+          '</tbody></table></div>' : '<p class="hint">No orders placed for this post yet' + (p ? "" : " — the planner has not picked it up") + '.</p>') + '</div>' +
+      '<div style="margin-top:12px"><b style="font-size:13px">Comments posted</b>' +
+        (r.comments.length ? '<div style="margin-top:6px">' + r.comments.map(function (c) { return '<div style="padding:5px 0;border-bottom:1px solid var(--border);font-size:13px">' + esc(c.text) + ' <span class="t2" style="font-size:12px">· ' + esc(etTime(c.at)) + '</span></div>'; }).join("") + '</div>'
+          : '<p class="hint">No comment lines posted on this video yet.</p>') +
+        '<p class="hint">AI-suggested comments from the video transcript + campaign brief arrive in Phase 5.</p></div>');
   }
   function niceMax(m) {
     var p = Math.pow(10, Math.floor(Math.log10(m))), k = [1, 2, 2.5, 5, 10].find(function (x) { return m <= x * p; });
@@ -4988,6 +5082,17 @@
       var n = $("dt-videos").querySelector("[data-vq]"); if (n) { n.focus(); n.setSelectionRange(n.value.length, n.value.length); }
     }, 200);
   });
+  function crgAct(e) {   // Phase 4: open/close an account, open a link
+    var lk = e.target.closest("[data-link]");
+    if (lk) { openLink(+lk.getAttribute("data-link")); return true; }
+    if (e.target.closest("[data-acct-close]")) { DT.acct = null; renderAccounts(); return true; }
+    var c = e.target.closest("[data-acct]"); if (!c) return false;
+    var k = c.getAttribute("data-acct"); DT.acct = DT.acct === k ? null : k; renderAccounts();
+    if (DT.acct) $("dt-crg").scrollIntoView({ block: "start", behavior: "smooth" });
+    return true;
+  }
+  $("dt-crg").addEventListener("click", crgAct);
+  $("dt-crg").addEventListener("keydown", function (e) { if ((e.key === "Enter" || e.key === " ") && e.target.matches("[data-acct],[data-link]")) { e.preventDefault(); crgAct(e); } });
   $("dt-trk").addEventListener("click", function (e) {   // Phase 2 tracker panel buttons
     var b = e.target.closest("[data-trk-import],[data-trk-refresh]"); if (!b) return;
     busy(b, true);

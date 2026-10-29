@@ -151,7 +151,9 @@ def accounts(links: list[dict], now: float | None = None) -> dict:
                     "likes": s("likes"), "comments": s("comments"), "shares": s("shares"),
                     "mature": len(m), "young": len(c) - len(m),
                     "series": [{"id": l["id"], "views": l["views"], "viral": bool(l.get("viral")), "mature": l["mature"],
-                                "day": et_day(l.get("uploaded_at"))} for l in c]})
+                                "day": et_day(l.get("uploaded_at")), "uploaded_at": l.get("uploaded_at"),
+                                "url": l.get("url"), "normal": l.get("normal"), "likes": l.get("likes"),
+                                "comments": l.get("comments"), "shares": l.get("shares")} for l in c]})
     out.sort(key=lambda a: -a["views"])
     counts = {k: 0 for k in TYPE_ORDER}
     for a in out:
