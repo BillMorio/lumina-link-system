@@ -49,6 +49,8 @@ async def _audit(who: str, action: str, target, detail=None) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
+    import pg
+    await pg.init()   # Phase 0 tracker store; tolerant if Postgres is down
     score.load_overrides()
     stuck = campaigns.recover_stuck()
     if stuck:
@@ -648,12 +650,10 @@ async def sideshift_programs(_: str = Depends(require_auth)):
     return {"programs": out}
 
 
-@app.get("/api/sources/{source}/preview")
-async def source_preview(source: str, ref: str = Query(...), _: str = Depends(require_auth)):
-    """Pull a program/campaign's creators + links for the modal preview.
-    Capped at ~300 posts so the preview stays snappy."""
+async def _pull_source(source: str, ref: str) -> tuple[list[dict], bool]:
+    """Pull a program/campaign's links (creator rides on each). Capped at ~300 posts.
+    -> (links, capped). Shared by preview and import."""
     import sources
-    source = source.lower().strip()
     links: list[dict] = []
     capped = False
     try:
@@ -670,7 +670,8 @@ async def source_preview(source: str, ref: str = Query(...), _: str = Depends(re
                     links.append({"url": url, "platform": sources.ss_platform(it) or "",
                                   "creator": it.get("contractorName") or it.get("creator") or "",
                                   "views": it.get("views"), "likes": it.get("likes"),
-                                  "comments": it.get("comments"),
+                                  "comments": it.get("comments"), "shares": it.get("shares"),
+                                  "title": it.get("title") or "",
                                   "uploaded_at": it.get("uploadedAt"), "thumbnail": it.get("thumbnail") or ""})
                 tp = d.get("totalPages")
                 if not got or (tp is not None and page >= int(tp)):
@@ -706,7 +707,14 @@ async def source_preview(source: str, ref: str = Query(...), _: str = Depends(re
         raise HTTPException(502, str(e))
     except clippers.ClippersError as e:
         raise HTTPException(502, str(e))
+    return links, capped
 
+
+@app.get("/api/sources/{source}/preview")
+async def source_preview(source: str, ref: str = Query(...), _: str = Depends(require_auth)):
+    """Pull a program/campaign's creators + links for the modal preview. Nothing stored."""
+    source = source.lower().strip()
+    links, capped = await _pull_source(source, ref)
     creators: dict[str, int] = {}
     plats: dict[str, int] = {}
     for l in links:
@@ -718,6 +726,43 @@ async def source_preview(source: str, ref: str = Query(...), _: str = Depends(re
             "totals": {"links": len(links), "creators": len(creators), "platforms": sorted(plats)},
             "creators": [{"name": k, "links": v} for k, v in sorted(creators.items(), key=lambda x: -x[1])][:100],
             "links": links[:200]}
+
+
+class ImportBody(BaseModel):
+    ref: str
+    name: str = ""
+    company: str = ""
+    views_goal: int | None = None
+
+
+@app.post("/api/sources/{source}/import")
+async def source_import(source: str, body: ImportBody, who: str = Depends(require_auth)):
+    """Phase 0: Pull & persist. Upserts the campaign, its creators, its links and a first
+    snapshot per link into the Postgres tracker store (links = the hub)."""
+    import pg
+    source = source.lower().strip()
+    if not pg.available():
+        raise HTTPException(503, "tracker store (Postgres) is not available")
+    links, capped = await _pull_source(source, body.ref)
+    r = await pg.import_pull(source, body.ref, body.name, body.company, links, body.views_goal)
+    await _audit(who, "tracker.import", body.ref, {"source": source, **r, "capped": capped})
+    return {**r, "capped": capped}
+
+
+@app.get("/api/tracker/campaigns")
+async def tracker_campaigns(_: str = Depends(require_auth)):
+    import pg
+    if not pg.available():
+        raise HTTPException(503, "tracker store (Postgres) is not available")
+    return {"campaigns": await pg.list_campaigns()}
+
+
+@app.get("/api/tracker/campaigns/{cid}/links")
+async def tracker_links(cid: int, _: str = Depends(require_auth)):
+    import pg
+    if not pg.available():
+        raise HTTPException(503, "tracker store (Postgres) is not available")
+    return {"links": await pg.campaign_links(cid)}
 
 
 class LinkBody(BaseModel):

@@ -4064,7 +4064,8 @@
       '<p class="hint full" id="ae-sref-h" style="margin-top:-8px"></p>' +
       '<div class="full" id="ae-pick-wrap" hidden style="margin-top:-4px"><label class="flab" for="ae-pick">Pick from <span id="ae-pick-src"></span></label>' +
         '<div style="display:flex;gap:8px;align-items:center"><select class="sel-in" id="ae-pick" style="flex:1"><option value="">Loading…</option></select>' +
-        '<button type="button" class="btn" id="ae-pull" style="white-space:nowrap">Pull data</button></div>' +
+        '<button type="button" class="btn" id="ae-pull" style="white-space:nowrap">Pull data</button>' +
+        '<button type="button" class="btn" id="ae-import" style="white-space:nowrap" title="Save this campaign\'s creators + links into the link tracker">Import to tracker</button></div>' +
         '<div id="ae-pull-out" class="hint" style="margin-top:8px"></div></div>' +
       inp("goal", "Views goal", v.views_goal, 'inputmode="numeric" placeholder="4000000"') +
       inp("creators", "Total creators uploading", v.creators_planned, 'inputmode="numeric" placeholder="10"') +
@@ -4205,13 +4206,13 @@
           list.map(function (c) {
             if (src === "sideshift") {
               var extra = (c.creators != null ? " · " + c.creators + " creators" : "") + (c.posts != null ? " · " + fmt(c.posts) + " posts" : "");
-              return '<option value="' + esc(String(c.id)) + '"' +
+              return '<option value="' + esc(String(c.id)) + '" data-name="' + esc(c.name || "") + '" data-company="' + esc(c.company || "") + '"' +
                 (c.creators != null ? ' data-creators="' + c.creators + '"' : "") +
                 (c.creators_total != null ? ' data-ctotal="' + c.creators_total + '"' : "") +
                 (c.posts != null ? ' data-posts="' + c.posts + '"' : "") + ">" + esc((c.name || ("#" + c.id)) + extra) + "</option>";
             }
             var ex = c.submission_count != null ? " · " + c.submission_count + " posts" : "";
-            return '<option value="' + esc(String(c.id)) + '">' + esc((c.name || ("#" + c.id)) + ex) + "</option>";
+            return '<option value="' + esc(String(c.id)) + '" data-name="' + esc(c.name || "") + '">' + esc((c.name || ("#" + c.id)) + ex) + "</option>";
           }).join("");
       }).catch(function (e) { sel.innerHTML = '<option value="">Could not load (' + esc(e.message) + ")</option>"; });
     }
@@ -4240,6 +4241,18 @@
           '<div style="margin-top:6px;max-height:170px;overflow:auto">' + rows + ((r.links || []).length > 10 ? '<div class="t2">…and more</div>' : "") + "</div>";
         paint();
       }).catch(function (e) { busy(btn, false); out.innerHTML = '<span style="color:#e5484d">Pull failed: ' + esc(e.message) + "</span>"; });
+    });
+    q("#ae-import").addEventListener("click", function () {   // Phase 0: Pull & persist into the link tracker
+      var src = val("source"), ref = q("#ae-pick").value || val("sref"), out = q("#ae-pull-out"), btn = this, o = pickOpt();
+      if (!ref) { out.innerHTML = "Pick a " + (src === "sideshift" ? "program" : "campaign") + " first."; return; }
+      busy(btn, true); out.textContent = "Importing…";
+      req("POST", "/api/sources/" + src + "/import", { ref: ref, name: (o && o.getAttribute("data-name")) || val("name") || "",
+        company: (o && o.getAttribute("data-company")) || "", views_goal: +val("goal") || null }).then(function (r) {
+        busy(btn, false);
+        out.innerHTML = "<b>Imported to tracker: " + fmt(r.links || 0) + " links · " + fmt(r.creators || 0) + " creators · " + fmt(r.snapshots || 0) + " view snapshots</b>" +
+          (r.capped ? ' <span class="t2">(first ~300 posts)</span>' : "");
+        toast("Imported " + fmt(r.links || 0) + " links into the tracker.", "ok");
+      }).catch(function (e) { busy(btn, false); out.innerHTML = '<span style="color:#e5484d">Import failed: ' + esc(e.message) + "</span>"; });
     });
     q("#ae-source").addEventListener("change", loadPicker); loadPicker();
     function submit(d, btn) {
