@@ -758,6 +758,7 @@ def plan(camp: dict, now: int, skip_ids=frozenset(), nolike_ids=frozenset(), ale
           if automation.extra_ok(camp, pl, "comments")}
     cc = {pl: x for pl, x in cc.items() if x}
     pool_n = db.q1("SELECT COUNT(*) n FROM comment_pool WHERE campaign_id=?", (cid,))["n"] if cc else 0
+    own_n = automation.own_lines_count(cid) if cc else {}   # Phase 5: a post's own approved lines add to its room
     c_done = automation.comments_ordered(practice) if cc else {}
     c_short = 0
 
@@ -767,8 +768,9 @@ def plan(camp: dict, now: int, skip_ids=frozenset(), nolike_ids=frozenset(), ale
         lo = max(COMMENT_MIN, x.get("min") or 0)
         want = math.floor(obs(p) * camp["comments_per_1k"] / 1000) - done_
         want = min(want, x.get("max") or want)
-        room = pool_n - done_
-        if want >= lo and room < want and pool_n:   # an empty list has its own alert
+        avail = pool_n + own_n.get(p["url_key"], 0)
+        room = avail - done_
+        if want >= lo and room < want and avail:   # an empty list has its own alert
             c_short += 1
         n = min(want, room)
         return n if n >= lo else 0
@@ -810,7 +812,7 @@ def plan(camp: dict, now: int, skip_ids=frozenset(), nolike_ids=frozenset(), ale
     inserted = automation.insert_plan(new)[0] if new else 0
     replaced = replace_rows([r for r in rows if r["plan_id"] in planned])
     shortfall = round(shortfall)
-    c_info = {"comments_short": c_short, "comments_list_empty": bool(cc) and not pool_n}
+    c_info = {"comments_short": c_short, "comments_list_empty": bool(cc) and not pool_n and not own_n}
     if alert:
         shortfall_alert(camp, shortfall)
         split_gap_alert(camp, split_gap, today)

@@ -1624,13 +1624,15 @@ async def auto_tracker_link(cid: int, lid: int, _: str = Depends(require_auth)):
     ck = canon_key(link["url"])
     now = int(time.time())
 
+    import comments_ai
+
     def console():
         post = db.q1("SELECT * FROM auto_posts WHERE campaign_id=? AND url_key=? ORDER BY id DESC LIMIT 1", (cid, ck))
         orders = db.q("SELECT id, day, kind, provider, service, qty, est_cost, state, attempt, order_id, error, is_test, "
                       "created_at, comments FROM auto_orders WHERE campaign_id=? AND url_key=? ORDER BY created_at DESC", (cid, ck))
         lines = db.q("SELECT text, at, order_id FROM comment_used WHERE campaign_id=? AND url_key=? ORDER BY at", (cid, ck))
-        return post, orders, lines
-    post, orders, lines = await asyncio.to_thread(console)
+        return post, orders, lines, comments_ai.post_view(cid, ck)
+    post, orders, lines, ai = await asyncio.to_thread(console)
     for o in orders:
         o["bucket"] = _bucket(o, now)
         try:
@@ -1651,7 +1653,69 @@ async def auto_tracker_link(cid: int, lid: int, _: str = Depends(require_auth)):
             "post": None if not post else {k: post.get(k) for k in ("target_total", "observed_views", "observed_likes", "status",
                                                                        "reason", "peak", "checked_at", "viral_state", "day")},
             "orders": orders, "order_summary": summary, "stuck_h": STUCK_SEC // 3600,
-            "comments": [{"text": c["text"], "at": c["at"], "order_id": c["order_id"]} for c in lines]}
+            "comments": [{"text": c["text"], "at": c["at"], "order_id": c["order_id"]} for c in lines], "ai": ai}
+
+
+class BriefBody(BaseModel):
+    brief: str = ""
+    tone: str = ""
+
+
+@app.get("/api/auto/campaigns/{cid}/brief")
+async def auto_brief(cid: int, _: str = Depends(require_auth)):
+    import comments_ai
+    return await asyncio.to_thread(comments_ai.get_brief, cid)
+
+
+@app.put("/api/auto/campaigns/{cid}/brief")
+async def auto_brief_set(cid: int, body: BriefBody, who: str = Depends(require_auth)):
+    """Phase 5: the campaign brief + tone the AI writes comments from."""
+    import comments_ai
+    if not await asyncio.to_thread(automation._camp, cid):
+        raise HTTPException(404, "no such campaign")
+    r = await asyncio.to_thread(comments_ai.set_brief, cid, body.brief, body.tone)
+    await _audit(who, "auto.brief.set", cid, {"chars": len(r["brief"]), "tone": r["tone"]})
+    return r
+
+
+class SuggestBody(BaseModel):
+    n: int = 10
+
+
+@app.post("/api/auto/campaigns/{cid}/tracker/links/{lid}/suggest")
+async def auto_link_suggest(cid: int, lid: int, body: SuggestBody, who: str = Depends(require_auth)):
+    """Phase 5: transcribe (Instagram) or read the caption, then have Gemini write N candidate comments."""
+    import comments_ai
+    import pg
+    _, base, tracked = await _tracker_match(cid)
+    link = await pg.get_link(lid) if tracked else None
+    if not link or link["campaign_id"] not in {t["id"] for t in tracked}:
+        raise HTTPException(404, "no such link on this campaign")
+    try:
+        r = await comments_ai.suggest(cid, link["url"], link.get("platform") or "", link.get("title") or "", max(1, min(20, body.n)))
+    except comments_ai.AIError as e:
+        raise HTTPException(502, str(e))
+    await _audit(who, "auto.comments.suggest", cid, {"link": lid, **r})
+    return r
+
+
+class DecideBody(BaseModel):
+    action: str
+    text: str | None = None
+
+
+@app.post("/api/auto/campaigns/{cid}/suggestions/{sid}")
+async def auto_suggestion_decide(cid: int, sid: int, body: DecideBody, who: str = Depends(require_auth)):
+    """Phase 5: approve (optionally edited) / reject / restore one AI comment. Approved = this post's own line."""
+    import comments_ai
+    try:
+        r = await asyncio.to_thread(comments_ai.decide, cid, sid, body.action, body.text)
+    except LookupError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    await _audit(who, "auto.comments.decide", cid, {"id": sid, "action": body.action, "edited": body.text is not None})
+    return r
 
 
 @app.get("/api/auto/campaigns/{cid}/tracker/accounts")

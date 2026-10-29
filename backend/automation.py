@@ -436,24 +436,44 @@ def used_texts(key: str) -> set[str]:
     return out
 
 
+def own_lines(cid: int, key: str) -> list[dict]:
+    """Phase 5: this post's own approved lines (AI suggestions a person approved for this video)."""
+    return db.q("SELECT id, text FROM comment_suggestions WHERE campaign_id=? AND url_key=? AND status='approved'",
+                (cid, key))
+
+
+def own_lines_count(cid: int) -> dict[str, int]:
+    """url_key -> approved own lines, for the planner's per-post comment room."""
+    return {r["url_key"]: r["n"] for r in db.q("SELECT url_key, COUNT(*) n FROM comment_suggestions "
+                                                "WHERE campaign_id=? AND status='approved' GROUP BY url_key", (cid,))}
+
+
 def pick_lines(cid: int, key: str, n: int) -> tuple[list[tuple[int, str]], int]:
-    """-> (up to n (id, text) lines not yet on this post, least used first, random tie-break; pool size)."""
+    """-> (up to n (id, text) lines not yet on this post; lines available to it).
+    Phase 5: the post's own approved lines go first (ids negative, so they are never mistaken for pool ids),
+    then the campaign list, least used first, random tie-break. A line is still never posted twice on a post."""
     rows = db.q("SELECT id, text, times_used FROM comment_pool WHERE campaign_id=?", (cid,))
+    own = own_lines(cid, key)
     used = used_texts(key)
-    cands = [r for r in rows if r["text"] not in used]
+    mine = [(-r["id"], r["text"]) for r in own if r["text"] not in used]
+    random.shuffle(mine)
+    taken = {t for _, t in mine}
+    cands = [r for r in rows if r["text"] not in used and r["text"] not in taken]
     random.shuffle(cands)
     cands.sort(key=lambda r: r["times_used"])   # stable: equal counts stay shuffled
-    return [(r["id"], r["text"]) for r in cands[:max(0, n)]], len(rows)
+    return (mine + [(r["id"], r["text"]) for r in cands])[:max(0, n)], len(rows) + len(own)
 
 
 def mark_used(cid: int, key: str, order_id: int, lines: list[tuple[int, str]]) -> None:
     """Only after the panel accepted the order (or it was simulated in Practice)."""
     now = _now()
+    pool_ids = [i for i, _ in lines if i and i > 0]   # own lines (negative ids) have no pool counter
     with db._conn() as c:
         c.executemany("INSERT INTO comment_used (campaign_id, url_key, line_id, text, order_id, at) VALUES (?,?,?,?,?,?)",
                       [(cid, key, i, t, order_id, now) for i, t in lines])
-        c.execute(f"UPDATE comment_pool SET times_used = times_used + 1 WHERE id IN ({','.join('?' * len(lines))})",
-                  [i for i, _ in lines])
+        if pool_ids:
+            c.execute(f"UPDATE comment_pool SET times_used = times_used + 1 WHERE id IN ({','.join('?' * len(pool_ids))})",
+                      pool_ids)
 
 
 def comments_ordered(practice: bool) -> dict[str, int]:

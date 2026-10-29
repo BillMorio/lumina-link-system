@@ -457,3 +457,16 @@ def init_db() -> None:
         c.execute("CREATE INDEX IF NOT EXISTS comment_used_key ON comment_used(url_key)")
         if "comments" not in {r["name"] for r in c.execute("PRAGMA table_info(auto_orders)")}:
             c.execute("ALTER TABLE auto_orders ADD COLUMN comments TEXT")   # JSON list of the lines sent (custom comments)
+        # Phase 5 AI comments: a brief per campaign, one transcript per post, and suggested lines per post.
+        # status='approved' rows ARE the post's own comment lines: pick_lines uses them before the campaign list.
+        c.execute("""CREATE TABLE IF NOT EXISTS comment_briefs (
+                campaign_id INTEGER PRIMARY KEY, brief TEXT NOT NULL DEFAULT '', tone TEXT NOT NULL DEFAULT '',
+                updated_at INTEGER NOT NULL)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS post_transcripts (
+                url_key TEXT PRIMARY KEY, source TEXT NOT NULL, text TEXT NOT NULL, lang TEXT, error TEXT,
+                at INTEGER NOT NULL)""")                    # source: transcript | caption | none
+        c.execute("""CREATE TABLE IF NOT EXISTS comment_suggestions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id INTEGER NOT NULL, url_key TEXT NOT NULL,
+                text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'suggested',   -- suggested | approved | rejected
+                model TEXT, created_at INTEGER NOT NULL, decided_at INTEGER, UNIQUE (campaign_id, url_key, text))""")
+        c.execute("CREATE INDEX IF NOT EXISTS comment_sugg_key ON comment_suggestions(campaign_id, url_key, status)")

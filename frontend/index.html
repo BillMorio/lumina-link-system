@@ -4879,8 +4879,54 @@
   }
   function openLink(lid) {
     var dl = dialog({ title: "Link detail", sub: "loading…", wide: true, cls: "xwide", body: '<div class="blk"><span class="sk" style="width:60%;height:22px"></span></div>', actions: [{ label: "Close" }] });
-    req("GET", "/api/auto/campaigns/" + ac.id + "/tracker/links/" + lid).then(function (r) { linkBody(dl, r); })
-      .catch(function (e) { setDlgBody(dl, blockFail(e, "Could not load this link", "link")); });
+    var cid = ac.id, base = "/api/auto/campaigns/" + cid;
+    function reload() { return req("GET", base + "/tracker/links/" + lid).then(function (r) { linkBody(dl, r); }); }
+    reload().catch(function (e) { setDlgBody(dl, blockFail(e, "Could not load this link", "link")); });
+    dl.el.addEventListener("click", function (e) {   // Phase 5 AI comment actions
+      var b = e.target.closest("[data-ai-gen],[data-sg],[data-brief-save]"); if (!b) return;
+      var out = dl.el.querySelector("[data-ai-msg]"), say = function (h) { if (out) out.innerHTML = h; };
+      busy(b, true);
+      var p;
+      if (b.hasAttribute("data-ai-gen")) {
+        say("Reading the video and writing comments… (an Instagram transcript can take up to a minute)");
+        p = req("POST", base + "/tracker/links/" + lid + "/suggest", { n: 10 }).then(function (r) {
+          toast("Added " + fmt(r.added) + " suggestions" + (r.context && r.context.source ? " (from the " + r.context.source + ")" : "") + ".", "ok"); return reload(); });
+      } else if (b.hasAttribute("data-brief-save")) {
+        p = req("PUT", base + "/brief", { brief: dl.el.querySelector("[data-brief]").value, tone: dl.el.querySelector("[data-tone]").value })
+          .then(function () { toast("Campaign brief saved.", "ok"); return reload(); });
+      } else {
+        var sid = b.getAttribute("data-sg"), act = b.getAttribute("data-act"), inp = dl.el.querySelector('[data-sgt="' + sid + '"]');
+        var body = { action: act }; if (inp && act === "approve" && inp.value.trim() !== inp.getAttribute("data-orig")) body.text = inp.value;
+        p = req("POST", base + "/suggestions/" + sid, body).then(reload);
+      }
+      p.catch(function (er) { busy(b, false); say('<span style="color:#e5484d">' + esc(er.message) + '</span>'); });
+    });
+  }
+  function aiHtml(r) {
+    var ai = r.ai || {}, cx = ai.context, S = ai.suggestions || [], src = { transcript: "Transcript", caption: "Caption", none: "No context" };
+    var bf = ai.brief || {};
+    var sug = S.filter(function (s) { return s.status === "suggested"; }), ok = S.filter(function (s) { return s.status === "approved"; }), no = S.filter(function (s) { return s.status === "rejected"; });
+    var row = function (s, acts) {
+      return '<div style="display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid var(--border)">' +
+        (s.status === "suggested" ? '<input class="in" style="flex:1;min-width:0;height:32px" data-sgt="' + s.id + '" data-orig="' + esc(s.text) + '" value="' + esc(s.text) + '">'
+          : '<span style="flex:1;min-width:0;font-size:13px;word-break:break-word">' + esc(s.text) + '</span>') +
+        acts.map(function (a) { return '<button class="btn ' + (a[0] === "approve" ? "btn-primary" : "btn-ghost") + ' sm" type="button" data-sg="' + s.id + '" data-act="' + a[0] + '">' + a[1] + '</button>'; }).join("") + '</div>';
+    };
+    return '<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px"><b style="font-size:13px">AI comments</b>' +
+      ' <span class="t2" style="font-size:12.5px">· approved lines become this video\'s own comment lines; the planner posts them before the campaign list</span>' +
+      '<div class="t2" style="font-size:12.5px;margin:6px 0">' + (cx ? "Context: <b>" + esc(src[cx.source] || cx.source) + "</b>" + (cx.lang ? " (" + esc(cx.lang) + ")" : "") +
+        (cx.error ? ' · <span style="color:var(--wait)">' + esc(cx.error) + '</span>' : "") : "Context: read on the first Generate (Instagram = transcript, others = caption)") + '</div>' +
+      (cx && cx.text ? '<details class="t2" style="font-size:12.5px;margin-bottom:6px"><summary>Show ' + esc((src[cx.source] || "context").toLowerCase()) + '</summary><div style="white-space:pre-wrap;margin-top:4px">' + esc(cx.text) + '</div></details>' : '') +
+      '<details' + (ai.brief_set ? '' : ' open') + ' style="margin-bottom:8px"><summary style="font-size:12.5px;cursor:pointer">' + (ai.brief_set ? "Campaign brief (set)" : '<b style="color:var(--wait)">Set the campaign brief first</b>') + '</summary>' +
+        '<textarea class="in" data-brief rows="4" style="width:100%;margin-top:6px;height:auto" placeholder="What the campaign is, who the viewers are, what comments should and should not say">' + esc(bf.brief || "") + '</textarea>' +
+        '<div style="display:flex;gap:8px;margin-top:6px"><input class="in" data-tone style="flex:1;height:32px" placeholder="Tone, e.g. hyped, playful, casual" value="' + esc(bf.tone || "") + '">' +
+        '<button class="btn btn-ghost sm" type="button" data-brief-save>Save brief</button></div></details>' +
+      '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><button class="btn btn-primary sm" type="button" data-ai-gen' + (ai.ready ? '' : ' disabled title="GEMINI_API_KEY is not set on the backend"') + '>Generate 10 suggestions</button>' +
+        '<span class="t2" style="font-size:12.5px" data-ai-msg>' + (ai.ready ? "" : "AI is off: GEMINI_API_KEY is not set on the backend.") + '</span></div>' +
+      (sug.length ? '<div style="margin-top:8px"><div class="t2" style="font-size:12px">Suggested (' + fmt(sug.length) + ') · edit before approving if you like</div>' + sug.map(function (s) { return row(s, [["approve", "Approve"], ["reject", "Reject"]]); }).join("") + '</div>' : '') +
+      (ok.length ? '<div style="margin-top:8px"><div style="font-size:12px;color:var(--good,#1bab55);font-weight:700">Approved for this video (' + fmt(ok.length) + ')</div>' + ok.map(function (s) { return row(s, [["restore", "Undo"]]); }).join("") + '</div>' : '') +
+      (no.length ? '<details style="margin-top:8px"><summary class="t2" style="font-size:12px">Rejected (' + fmt(no.length) + ')</summary>' + no.map(function (s) { return row(s, [["restore", "Restore"]]); }).join("") + '</details>' : '') +
+      '</div>';
   }
   function setDlgBody(dl, html) { var b = dl.el.querySelector(".dlg-b"); if (b) b.innerHTML = html; }
   function linkBody(dl, r) {
@@ -4912,8 +4958,7 @@
           '</tbody></table></div>' : '<p class="hint">No orders placed for this post yet' + (p ? "" : " — the planner has not picked it up") + '.</p>') + '</div>' +
       '<div style="margin-top:12px"><b style="font-size:13px">Comments posted</b>' +
         (r.comments.length ? '<div style="margin-top:6px">' + r.comments.map(function (c) { return '<div style="padding:5px 0;border-bottom:1px solid var(--border);font-size:13px">' + esc(c.text) + ' <span class="t2" style="font-size:12px">· ' + esc(etTime(c.at)) + '</span></div>'; }).join("") + '</div>'
-          : '<p class="hint">No comment lines posted on this video yet.</p>') +
-        '<p class="hint">AI-suggested comments from the video transcript + campaign brief arrive in Phase 5.</p></div>');
+          : '<p class="hint">No comment lines posted on this video yet.</p>') + '</div>' + aiHtml(r));
   }
   function niceMax(m) {
     var p = Math.pow(10, Math.floor(Math.log10(m))), k = [1, 2, 2.5, 5, 10].find(function (x) { return m <= x * p; });
