@@ -85,6 +85,11 @@ CREATE TABLE IF NOT EXISTS tracker_orders (
     created_at     BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_tracker_orders_link ON tracker_orders(link_id);
+-- Phase 1: worker bookkeeping + one snapshot per link per instant (history backfill is re-run safe)
+ALTER TABLE tracker_campaigns ADD COLUMN IF NOT EXISTS refreshed_at BIGINT;
+ALTER TABLE tracker_campaigns ADD COLUMN IF NOT EXISTS refresh_error TEXT;
+ALTER TABLE tracker_links ADD COLUMN IF NOT EXISTS history_at BIGINT;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_tracker_snap_link_t ON tracker_post_snapshots(link_id, t);
 """
 
 
@@ -171,21 +176,25 @@ async def import_pull(source: str, ref: str, name: str, company: str,
                                VALUES ($1,$2) ON CONFLICT DO NOTHING""", cid, creator_id)
                 link_id = await c.fetchval(
                     """INSERT INTO tracker_links
-                         (campaign_id, creator_id, url, url_key, platform, title, thumbnail, uploaded_at, created_at)
-                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                         (campaign_id, creator_id, url, url_key, platform, ext_post_id, title, thumbnail, uploaded_at, created_at)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
                        ON CONFLICT (campaign_id, url_key) DO UPDATE
                          SET creator_id = COALESCE(EXCLUDED.creator_id, tracker_links.creator_id),
-                             platform = EXCLUDED.platform, thumbnail = EXCLUDED.thumbnail
+                             platform = EXCLUDED.platform,
+                             ext_post_id = COALESCE(EXCLUDED.ext_post_id, tracker_links.ext_post_id),
+                             title = CASE WHEN EXCLUDED.title <> '' THEN EXCLUDED.title ELSE tracker_links.title END,
+                             thumbnail = CASE WHEN EXCLUDED.thumbnail <> '' THEN EXCLUDED.thumbnail ELSE tracker_links.thumbnail END,
+                             uploaded_at = COALESCE(EXCLUDED.uploaded_at, tracker_links.uploaded_at)
                        RETURNING id""",
-                    cid, creator_id, url, url_key(url), l.get("platform") or "",
+                    cid, creator_id, url, url_key(url), l.get("platform") or "", l.get("ext_post_id"),
                     l.get("title") or "", l.get("thumbnail") or "", l.get("uploaded_at"), now)
                 n_links += 1
                 if any(l.get(k) is not None for k in ("views", "likes", "comments", "shares")):
-                    await c.execute(
+                    res = await c.execute(
                         """INSERT INTO tracker_post_snapshots (link_id, t, views, likes, comments, shares)
-                           VALUES ($1,$2,$3,$4,$5,$6)""",
+                           VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (link_id, t) DO NOTHING""",
                         link_id, now, l.get("views"), l.get("likes"), l.get("comments"), l.get("shares"))
-                    n_snaps += 1
+                    n_snaps += res.endswith(" 1")
     return {"campaign_id": cid, "links": n_links, "creators": n_creators, "snapshots": n_snaps}
 
 
@@ -194,6 +203,54 @@ async def list_campaigns() -> list[dict]:
     rows = await pool.fetch(
         """SELECT c.*, (SELECT COUNT(*) FROM tracker_links l WHERE l.campaign_id = c.id) AS link_count
            FROM tracker_campaigns c ORDER BY c.created_at DESC""")
+    return [dict(r) for r in rows]
+
+
+async def get_campaign(cid: int) -> dict | None:
+    pool = await _require()
+    r = await pool.fetchrow("SELECT * FROM tracker_campaigns WHERE id = $1", cid)
+    return dict(r) if r else None
+
+
+async def mark_refreshed(cid: int, error: str | None) -> None:
+    pool = await _require()
+    await pool.execute("UPDATE tracker_campaigns SET refreshed_at = $2, refresh_error = $3 WHERE id = $1",
+                       cid, int(time.time()), error)
+
+
+async def links_needing_history(cid: int) -> list[dict]:
+    pool = await _require()
+    rows = await pool.fetch(
+        """SELECT id, ext_post_id FROM tracker_links
+           WHERE campaign_id = $1 AND history_at IS NULL AND ext_post_id IS NOT NULL ORDER BY id""", cid)
+    return [dict(r) for r in rows]
+
+
+async def add_history(link_id: int, points: list[dict]) -> int:
+    """SideShift metrics-history points [{timestamp, views, likes, comments, shares}] -> snapshots. -> rows added."""
+    pool = await _require()
+    rows = [(link_id, int(p["timestamp"]), p.get("views"), p.get("likes"), p.get("comments"), p.get("shares"))
+            for p in points if p.get("timestamp") is not None]
+    if not rows:
+        return 0
+    async with pool.acquire() as c:
+        before = await c.fetchval("SELECT COUNT(*) FROM tracker_post_snapshots WHERE link_id = $1", link_id)
+        await c.executemany(
+            """INSERT INTO tracker_post_snapshots (link_id, t, views, likes, comments, shares)
+               VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (link_id, t) DO NOTHING""", rows)
+        after = await c.fetchval("SELECT COUNT(*) FROM tracker_post_snapshots WHERE link_id = $1", link_id)
+    return after - before
+
+
+async def mark_history(link_id: int) -> None:
+    pool = await _require()
+    await pool.execute("UPDATE tracker_links SET history_at = $2 WHERE id = $1", link_id, int(time.time()))
+
+
+async def link_snapshots(link_id: int) -> list[dict]:
+    pool = await _require()
+    rows = await pool.fetch(
+        "SELECT t, views, likes, comments, shares FROM tracker_post_snapshots WHERE link_id = $1 ORDER BY t", link_id)
     return [dict(r) for r in rows]
 
 

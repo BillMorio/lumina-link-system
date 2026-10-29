@@ -50,7 +50,9 @@ async def _audit(who: str, action: str, target, detail=None) -> None:
 async def lifespan(app: FastAPI):
     db.init_db()
     import pg
+    import tracker
     await pg.init()   # Phase 0 tracker store; tolerant if Postgres is down
+    tracker.start()   # Phase 1 snapshot worker (no-op while the store is down)
     score.load_overrides()
     stuck = campaigns.recover_stuck()
     if stuck:
@@ -650,64 +652,18 @@ async def sideshift_programs(_: str = Depends(require_auth)):
     return {"programs": out}
 
 
-async def _pull_source(source: str, ref: str) -> tuple[list[dict], bool]:
-    """Pull a program/campaign's links (creator rides on each). Capped at ~300 posts.
-    -> (links, capped). Shared by preview and import."""
+async def _pull_source(source: str, ref: str, max_pages: int | None = None) -> tuple[list[dict], bool]:
+    """tracker.pull_source with upstream errors mapped to HTTP. -> (links, capped)."""
     import sources
-    links: list[dict] = []
-    capped = False
+    import tracker
     try:
-        if source == "sideshift":
-            for page in range(1, 4):
-                d = await sources._ss_get("/analytics/videos", {"programId": ref, "limit": 100, "page": page})
-                got = d.get("data") or []
-                for it in got:
-                    if sources.ss_deleted(it):
-                        continue
-                    url = it.get("postPage") or ""
-                    if not url:
-                        continue
-                    links.append({"url": url, "platform": sources.ss_platform(it) or "",
-                                  "creator": it.get("contractorName") or it.get("creator") or "",
-                                  "views": it.get("views"), "likes": it.get("likes"),
-                                  "comments": it.get("comments"), "shares": it.get("shares"),
-                                  "title": it.get("title") or "",
-                                  "uploaded_at": it.get("uploadedAt"), "thumbnail": it.get("thumbnail") or ""})
-                tp = d.get("totalPages")
-                if not got or (tp is not None and page >= int(tp)):
-                    break
-                if page == 3:
-                    capped = tp is None or int(tp) > 3
-        elif source == "clippers":
-            try:
-                cid = int(ref)
-            except ValueError:
-                raise HTTPException(400, "clippers ref must be a campaign id")
-            page = 1
-            while page <= 3:
-                d = await clippers._get(f"/api/campaigns/{cid}/submissions", {"page": page, "per_page": 100})
-                for s in d.get("items", []):
-                    url = s.get("post_url") or ""
-                    if not url:
-                        continue
-                    plat = (s.get("platform") or "").lower()
-                    links.append({"url": url, "platform": "x" if plat == "twitter" else plat,
-                                  "creator": s.get("clipper_name") or s.get("clipper_email") or "",
-                                  "views": None, "likes": None, "comments": None,
-                                  "uploaded_at": sources._epoch(s.get("created_at")), "thumbnail": ""})
-                pages = int(d.get("pages") or 1)
-                if page >= pages:
-                    break
-                page += 1
-                if page > 3:
-                    capped = True
-        else:
-            raise HTTPException(400, "source must be 'sideshift' or 'clippers'")
+        return await tracker.pull_source(source, ref, max_pages or tracker.PREVIEW_PAGES)
+    except ValueError as e:
+        raise HTTPException(400, str(e) if "source" in str(e) else "clippers ref must be a campaign id")
     except sources.SourceError as e:
         raise HTTPException(502, str(e))
     except clippers.ClippersError as e:
         raise HTTPException(502, str(e))
-    return links, capped
 
 
 @app.get("/api/sources/{source}/preview")
@@ -743,8 +699,12 @@ async def source_import(source: str, body: ImportBody, who: str = Depends(requir
     source = source.lower().strip()
     if not pg.available():
         raise HTTPException(503, "tracker store (Postgres) is not available")
-    links, capped = await _pull_source(source, body.ref)
+    import tracker
+    links, capped = await _pull_source(source, body.ref, tracker.FULL_PAGES)
     r = await pg.import_pull(source, body.ref, body.name, body.company, links, body.views_goal)
+    await pg.mark_refreshed(r["campaign_id"], None)
+    if source == "sideshift":   # Phase 1: daily history in the background, so charts start with real days
+        tracker.spawn(tracker.backfill_history(r["campaign_id"]))
     await _audit(who, "tracker.import", body.ref, {"source": source, **r, "capped": capped})
     return {**r, "capped": capped}
 
@@ -763,6 +723,44 @@ async def tracker_links(cid: int, _: str = Depends(require_auth)):
     if not pg.available():
         raise HTTPException(503, "tracker store (Postgres) is not available")
     return {"links": await pg.campaign_links(cid)}
+
+
+@app.post("/api/tracker/campaigns/{cid}/refresh")
+async def tracker_refresh(cid: int, who: str = Depends(require_auth)):
+    """Phase 1: snapshot one tracked campaign now (full re-pull + history backfill)."""
+    import pg
+    import sources
+    import tracker
+    if not pg.available():
+        raise HTTPException(503, "tracker store (Postgres) is not available")
+    c = await pg.get_campaign(cid)
+    if not c:
+        raise HTTPException(404, "no such tracked campaign")
+    try:
+        r = await tracker.refresh_campaign(c)
+    except (sources.SourceError, clippers.ClippersError) as e:
+        raise HTTPException(502, str(e))
+    await _audit(who, "tracker.refresh", cid, r)
+    return r
+
+
+@app.get("/api/tracker/links/{lid}/snapshots")
+async def tracker_snapshots(lid: int, _: str = Depends(require_auth)):
+    """Phase 1: one link's views/likes/comments/shares over time."""
+    import pg
+    if not pg.available():
+        raise HTTPException(503, "tracker store (Postgres) is not available")
+    return {"snapshots": await pg.link_snapshots(lid)}
+
+
+@app.get("/api/tracker/status")
+async def tracker_status(_: str = Depends(require_auth)):
+    import pg
+    import tracker
+    camps = await pg.list_campaigns() if pg.available() else []
+    return {"store": pg.available(), "worker": tracker.state,
+            "campaigns": [{"id": c["id"], "name": c["name"], "links": c["link_count"],
+                           "refreshed_at": c.get("refreshed_at"), "error": c.get("refresh_error")} for c in camps]}
 
 
 class LinkBody(BaseModel):
