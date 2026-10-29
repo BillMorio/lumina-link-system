@@ -634,10 +634,17 @@ async def sideshift_programs(_: str = Depends(require_auth)):
         data = await sources._ss_get("/campaigns", {"limit": 100})
     except sources.SourceError as e:
         raise HTTPException(502, str(e))
-    out = [{"id": c.get("id") or c.get("programId"), "name": c.get("name") or "",
-            "company": c.get("companyName") or "", "status": c.get("status") or "",
-            "posts": c.get("expectedTotalPosts")}
-           for c in (data or []) if (c.get("id") or c.get("programId"))]
+    out = []
+    for c in (data or []):
+        pid = c.get("id") or c.get("programId")
+        if not pid:
+            continue
+        st = c.get("stats") or {}
+        out.append({"id": pid, "name": c.get("name") or "", "company": c.get("companyName") or "",
+                    "status": c.get("status") or "",
+                    "creators": st.get("activeCreators"),        # realistic "creators uploading"
+                    "creators_total": st.get("totalCreators"),   # whole roster (incl. pending/inactive)
+                    "posts": st.get("totalPosts"), "views": st.get("totalViews")})
     return {"programs": out}
 
 

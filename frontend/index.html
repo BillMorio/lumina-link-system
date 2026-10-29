@@ -4203,27 +4203,41 @@
         var list = src === "sideshift" ? (r.programs || []) : (r.campaigns || []);
         sel.innerHTML = '<option value="">— pick a ' + (src === "sideshift" ? "program" : "campaign") + " —</option>" +
           list.map(function (c) {
-            var extra = src === "sideshift" ? (c.company ? " · " + c.company : "") : (c.submission_count != null ? " · " + c.submission_count + " posts" : "");
-            return '<option value="' + esc(String(c.id)) + '">' + esc((c.name || ("#" + c.id)) + extra) + "</option>";
+            if (src === "sideshift") {
+              var extra = (c.creators != null ? " · " + c.creators + " creators" : "") + (c.posts != null ? " · " + fmt(c.posts) + " posts" : "");
+              return '<option value="' + esc(String(c.id)) + '"' +
+                (c.creators != null ? ' data-creators="' + c.creators + '"' : "") +
+                (c.creators_total != null ? ' data-ctotal="' + c.creators_total + '"' : "") +
+                (c.posts != null ? ' data-posts="' + c.posts + '"' : "") + ">" + esc((c.name || ("#" + c.id)) + extra) + "</option>";
+            }
+            var ex = c.submission_count != null ? " · " + c.submission_count + " posts" : "";
+            return '<option value="' + esc(String(c.id)) + '">' + esc((c.name || ("#" + c.id)) + ex) + "</option>";
           }).join("");
       }).catch(function (e) { sel.innerHTML = '<option value="">Could not load (' + esc(e.message) + ")</option>"; });
     }
-    q("#ae-pick").addEventListener("change", function () { if (this.value) q("#ae-sref").value = this.value; });
+    function pickOpt() { return q("#ae-pick").selectedOptions[0] || null; }
+    q("#ae-pick").addEventListener("change", function () {
+      if (this.value) q("#ae-sref").value = this.value;
+      var o = pickOpt();   // SideShift only: fill "creators uploading" from the program's active-creator count
+      if (val("source") === "sideshift" && o && o.getAttribute("data-creators")) { q("#ae-creators").value = o.getAttribute("data-creators"); paint(); }
+    });
     q("#ae-pull").addEventListener("click", function () {
       var src = val("source"), ref = q("#ae-pick").value || val("sref"), out = q("#ae-pull-out"), btn = this;
       if (!ref) { out.innerHTML = "Pick a " + (src === "sideshift" ? "program" : "campaign") + " first."; return; }
       busy(btn, true); out.textContent = "Pulling…";
       api("/api/sources/" + src + "/preview?ref=" + encodeURIComponent(ref)).then(function (r) {
         busy(btn, false);
-        var t = r.totals || {}, pl = t.platforms || [];
-        if (t.creators) q("#ae-creators").value = t.creators;
+        var t = r.totals || {}, pl = t.platforms || [], o = pickOpt();
+        if (src === "sideshift" && o && o.getAttribute("data-creators")) q("#ae-creators").value = o.getAttribute("data-creators");   // authoritative, SideShift only
         pl.forEach(function (p) { var cb = q('[data-on="' + p + '"]'); if (cb && !cb.checked) { cb.checked = true; cb.dispatchEvent(new Event("change", { bubbles: true })); } });
         var rows = (r.links || []).slice(0, 10).map(function (l) {
           return '<div style="display:flex;justify-content:space-between;gap:10px;padding:2px 0"><span>' + esc(l.creator || "?") + ' <span class="t2">· ' + esc(l.platform || "?") + '</span></span><span class="t2">' + (l.views != null ? fmt(l.views) + " views" : "") + "</span></div>";
         }).join("");
-        out.innerHTML = "<b>Pulled " + fmt(t.links || 0) + " links · " + fmt(t.creators || 0) + " creators · " + (pl.join(", ") || "—") + "</b>" +
-          (r.capped ? ' <span class="t2">(preview capped at ~300)</span>' : "") +
-          '<div style="margin-top:6px;max-height:170px;overflow:auto">' + rows + ((r.links || []).length > 10 ? '<div class="t2">…and ' + ((r.links || []).length - 10) + " more</div>" : "") + "</div>";
+        var head = (src === "sideshift" && o && o.getAttribute("data-posts"))
+          ? "Program: " + fmt(+o.getAttribute("data-creators") || t.creators || 0) + " creators uploading · " + fmt(+o.getAttribute("data-posts") || 0) + " posts · " + (pl.join(", ") || "—")
+          : "Pulled " + fmt(t.links || 0) + " links · " + fmt(t.creators || 0) + " creators · " + (pl.join(", ") || "—");
+        out.innerHTML = "<b>" + head + "</b>" + (r.capped ? ' <span class="t2">(sampled first ~300 posts)</span>' : "") +
+          '<div style="margin-top:6px;max-height:170px;overflow:auto">' + rows + ((r.links || []).length > 10 ? '<div class="t2">…and more</div>' : "") + "</div>";
         paint();
       }).catch(function (e) { busy(btn, false); out.innerHTML = '<span style="color:#e5484d">Pull failed: ' + esc(e.message) + "</span>"; });
     });
