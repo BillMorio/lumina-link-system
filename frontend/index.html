@@ -4843,7 +4843,7 @@
         stat("Views", fmt(a.views), "across " + nWord(a.counted, "video") + " with counts") +
         stat("Average per video", a.avg == null ? "—" : fmt(a.avg), a.best != null ? "best video " + fmt(a.best) : "") +
         stat("Viral videos", fmt(a.viral), a.viral ? "≥" + fmt(TRK && TRK.viral_x || 6) + "x normal reach" : "none yet") +
-        stat("Normal reach", a.start_reach == null ? "—" : kfmt(a.start_reach) + " → " + kfmt(a.end_reach), "early vs late videos (viral and young ones left out)") +
+        stat("Normal reach", a.start_reach == null ? "—" : kfmt(a.start_reach) + " → " + kfmt(a.end_reach), "early vs late videos (viral and young ones left out)", "fit") +
         stat("Engagement", kfmt(a.likes) + " · " + kfmt(a.comments) + " · " + kfmt(a.shares), "likes · comments · shares" + (eng != null ? " · likes " + eng + "% of views" : ""), "fit") +
       '</div>' +
       '<div class="legend"><span><i style="background:#3b74d0"></i>Regular video</span><span><i style="background:#f08c00"></i>Viral video</span>' +
@@ -4855,7 +4855,7 @@
       '<div style="margin-top:12px"><b style="font-size:13px">Links</b> <span class="t2" style="font-size:12.5px">· newest first · click one for its orders, target vs actual and comments</span>' +
         '<div style="margin-top:6px">' + S.slice().reverse().map(function (s) {
           return '<div class="lrow" role="button" tabindex="0" data-link="' + s.id + '"><span class="t2">' + esc(mday(s.day)) + '</span>' + pf(a.platform) +
-            '<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(stripUrl(s.url || "")) + '</span>' +
+            '<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(s.url || "") + '">' + esc(stripUrl(s.url || "").split("?")[0]) + '</span>' +
             '<b style="text-align:right">' + fmt(s.views) + '</b><span>' + (s.viral ? st("good", "Viral") : !s.mature ? st("muted", "Young") : "") + '</span></div>';
         }).join("") + '</div></div></div>';
   }
@@ -4869,7 +4869,12 @@
     if (target) g += '<line x1="' + L + '" x2="' + (L + iw) + '" y1="' + y(target) + '" y2="' + y(target) + '" stroke="#0f1216" stroke-width="1.5" stroke-dasharray="4 3"/>';
     g += '<polyline points="' + pts.map(function (p) { return x(p.t) + "," + y(p.views); }).join(" ") + '" fill="none" stroke="#1bab55" stroke-width="2"/>';
     pts.forEach(function (p) { g += '<circle cx="' + x(p.t) + '" cy="' + y(p.views) + '" r="3" fill="#1bab55"><title>' + esc(etTime(p.t) + "\nViews: " + fmt(p.views) + (p.likes != null ? "\nLikes: " + fmt(p.likes) : "")) + '</title></circle>'; });
-    var n = Math.min(6, pts.length); for (var j = 0; j < n; j++) { var tt = t0 + (t1 - t0) * j / Math.max(1, n - 1); g += '<text x="' + x(tt) + '" y="' + (T + H + 14) + '" text-anchor="' + (j === 0 ? "start" : j === n - 1 ? "end" : "middle") + '">' + esc(new Date(tt * 1000).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })) + '</text>'; }
+    var n = Math.min(6, pts.length), seen = {};
+    for (var j = 0; j < n; j++) {
+      var tt = t0 + (t1 - t0) * j / Math.max(1, n - 1), lab = new Date(tt * 1000).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" });
+      if (seen[lab]) continue; seen[lab] = 1;   // ticks are evenly spaced in time, so two can share a day
+      g += '<text x="' + x(tt) + '" y="' + (T + H + 14) + '" text-anchor="' + (j === 0 ? "start" : j === n - 1 ? "end" : "middle") + '">' + esc(lab) + '</text>';
+    }
     return '<div class="chart"><svg width="' + W + '" height="' + (T + H + B) + '" viewBox="0 0 ' + W + ' ' + (T + H + B) + '" style="width:' + W + 'px" role="img" aria-label="Views over time">' + g + '</svg></div>';
   }
   function openLink(lid) {
@@ -4889,7 +4894,8 @@
     });
     var tone = function (b) { return (BUCKETS.find(function (x) { return x[0] === b; }) || [0, b, "muted"]); };
     setDlgBody(dl,
-      '<div style="margin-bottom:8px">' + ulink(l.url) + '</div>' +
+      '<div style="margin-bottom:8px"><a class="ulink" href="' + esc(/^https?:\/\//i.test(l.url || "") ? l.url : "https://" + stripUrl(l.url)) + '" target="_blank" rel="noopener" title="' + esc(l.url) + '">' +
+        esc(stripUrl(l.url).split("?")[0]) + '</a></div>' +
       '<div class="stats" style="border:1px solid var(--border);border-radius:12px;margin-bottom:12px">' +
         stat("Actual views", a.views == null ? "—" : fmt(a.views), a.t ? "read " + etTime(a.t) : "not read yet") +
         stat("Planner target", tgt ? fmt(tgt) : "—", tgt ? pct + "% reached" + '<div class="bar" style="margin-top:6px;min-width:0"><i style="width:' + Math.min(100, pct) + '%"></i></div>' : (p ? "no target set for this post" : "the planner has not picked this post up yet"), "", true) +
