@@ -1,4 +1,7 @@
 {
   "cleanUrls": true,
-  "trailingSlash": false
+  "trailingSlash": false,
+  "rewrites": [{ "source": "/:view(overview|campaigns|queue|order|bulk|fast|jobs|speed|automation|config)", "destination": "/" },
+    { "source": "/campaigns/:id", "destination": "/" },
+    { "source": "/automation/:id", "destination": "/" }]
 }
