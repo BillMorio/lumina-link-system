@@ -1553,6 +1553,38 @@ async def auto_dashboard(cid: int, _: str = Depends(require_auth)):
         _bad(e)
 
 
+@app.get("/api/auto/campaigns/{cid}/tracker")
+async def auto_tracker(cid: int, _: str = Depends(require_auth)):
+    """Phase 2: this automation campaign's live link analytics (Overview tab tracker panel).
+    Matched to tracker campaigns by (source, ref); several sources on one campaign are merged."""
+    import analytics
+    import pg
+    import sources
+    camp = await asyncio.to_thread(automation._camp, cid)
+    if not camp:
+        raise HTTPException(404, "no such campaign")
+    try:
+        refs = [(s, str(r)) for s, r in sources.refs(camp) if s in ("sideshift", "clippers")]
+    except sources.SourceError:
+        refs = []
+    base = {"campaign_id": cid, "refs": [{"source": s, "ref": r} for s, r in refs]}
+    if not refs:
+        return {**base, "tracked": False, "trackable": False}
+    if not pg.available():
+        raise HTTPException(503, "tracker store (Postgres) is not available")
+    found = [(s, r, await pg.find_campaign(s, r)) for s, r in refs]
+    tracked = [t for _, _, t in found if t]
+    missing = [{"source": s, "ref": r} for s, r, t in found if not t]
+    if not tracked:
+        return {**base, "tracked": False, "trackable": True, "missing": missing}
+    ids = [t["id"] for t in tracked]
+    links, snaps = await pg.campaign_rows(ids), await pg.campaign_snapshots(ids)
+    ov = analytics.overview(links, snaps, camp["views_goal"], camp["start_date"], camp["end_date"], automation.BUFFER_DAYS)
+    return {**base, "tracked": True, "missing": missing, **ov,
+            "tracker": [{"id": t["id"], "name": t["name"], "source": t["source"], "ref": t["source_ref"], "links": t["link_count"],
+                         "refreshed_at": t.get("refreshed_at"), "error": t.get("refresh_error")} for t in tracked]}
+
+
 @app.get("/api/auto/campaigns/{cid}/detail")
 async def auto_detail(cid: int, _: str = Depends(require_auth)):
     """v2.15 dashboard tabs: per day, per creator, per video, per slot and spend aggregates. Reads only."""

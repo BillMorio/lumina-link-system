@@ -1344,6 +1344,7 @@
             <button type="button" data-v="posts" aria-pressed="false">Posts</button>
           </div><span class="dt-more" aria-hidden="true">Swipe for more tabs &rsaquo;</span></div>
           <div class="dtp" id="dt-overview">
+            <div id="dt-trk"></div>
             <div class="stats" id="ac-stats" style="border:1px solid var(--border);border-radius:12px;margin-bottom:12px"></div>
             <div id="ac-kpi"></div>
             <div id="dt-ov"></div>
@@ -4548,7 +4549,8 @@
   });
 
   // ---- dashboard (v2.15: KPI row, setup card, tabs from GET .../detail) ----
-  var DX = null, DASH = null, DT = { tab: "overview", ov: "actual", tl: "actual", issues: false, vpl: "", vcr: "", vsort: "views", vn: 60, err: null };
+  var DX = null, DASH = null, DT = { tab: "overview", ov: "actual", tl: "actual", trk: "post", issues: false, vpl: "", vcr: "", vsort: "views", vn: 60, err: null };
+  var TRK = null;   // Phase 2: live link-tracker analytics for this campaign (/api/auto/campaigns/{id}/tracker)
   var PLC = { instagram: "#d6336c", facebook: "#3b74d0", tiktok: "#0f1216", youtube: "#e0563b" };
   function plc(p) { return PLC[p] || "#9198a2"; }
   function kfmt(n) { n = +n || 0; var a = Math.abs(n); return a >= 1e6 ? +(n / 1e6).toFixed(a >= 1e7 ? 0 : 1) + "M" : a >= 1e3 ? +(n / 1e3).toFixed(a >= 1e4 ? 0 : 1) + "K" : String(Math.round(n * 100) / 100); }
@@ -4562,6 +4564,7 @@
   }
   function loadDash(poll) {   // poll === true: planner running, re-read only /dashboard (detail is heavy)
     var id = ac.id; clearTimeout(ac.poll); poll = poll === true;
+    if (!poll) loadTracker(id);
     return Promise.all([req("GET", "/api/auto/campaigns/" + id + "/dashboard"),
       poll ? null : req("GET", "/api/auto/campaigns/" + id + "/detail").catch(function (e) { return { _err: e }; })]).then(function (r) {
       if (id !== ac.id) return;
@@ -4644,6 +4647,7 @@
   }
   function renderDetail() {
     DT_TABS.forEach(function (t) { $("dt-" + t).hidden = DT.tab !== t; });
+    renderTracker();
     renderCreators();
     if (["creators", "comments", "viral", "plan", "ord", "posts"].indexOf(DT.tab) >= 0) return;
     var el = DT.tab === "overview" ? $("dt-ov") : $("dt-" + DT.tab);
@@ -4654,6 +4658,104 @@
       return;
     }
     el.innerHTML = DT.tab === "overview" ? ovHtml() : DT.tab === "videos" ? vidHtml() : DT.tab === "spend" ? spendHtml() : tlHtml();
+  }
+  // ---- Phase 2: Link tracker panel (top of this campaign's Overview tab) -------------------------
+  function loadTracker(id) {
+    if (TRK && TRK.campaign_id !== id) { TRK = null; renderTracker(); }   // never show another campaign's numbers
+    return req("GET", "/api/auto/campaigns/" + id + "/tracker").then(function (t) {
+      if (id !== ac.id) return; TRK = t; renderTracker();
+    }).catch(function (e) { if (id !== ac.id) return; TRK = { _err: e }; renderTracker(); });
+  }
+  function renderTracker() {
+    var el = $("dt-trk"); if (!el) return;
+    if (!TRK) { el.innerHTML = '<div class="blk" style="margin-bottom:12px"><span class="sk" style="width:50%;height:22px"></span></div>'; return; }
+    if (TRK._err) { el.innerHTML = TRK._err.status === 404 ? "" : '<div style="margin-bottom:12px">' + blockFail(TRK._err, "Could not load the link tracker", "trk") + '</div>'; return; }
+    if (!TRK.tracked) {
+      el.innerHTML = !TRK.trackable ? "" :
+        '<div class="notice" style="margin-bottom:12px"><span class="ico">' + ic("alert") + '</span><div class="tx"><b>This campaign\'s links are not in the link tracker yet.</b>' +
+        '<span class="t2" style="display:block;font-size:12.5px">Start tracking to pull every post from ' + esc(TRK.refs.map(function (r) { return SRC_NAME[r.source] || r.source; }).join(" + ")) +
+        ' and record its views over time (free: the source\'s own counts).</span>' +
+        '<button class="btn btn-primary sm" type="button" data-trk-import style="margin-top:8px">Start tracking</button></div></div>';
+      return;
+    }
+    el.innerHTML = trkHtml(TRK);
+  }
+  function trkHtml(t) {
+    var k = t.tiles, upd = t.tracker.map(function (c) { return c.refreshed_at || 0; }), last = upd.length ? Math.min.apply(null, upd) : 0;
+    var errs = t.tracker.filter(function (c) { return c.error; });
+    var bar = function (p) { return '<div class="bar" style="margin-top:6px;min-width:0"><i style="width:' + Math.max(0, Math.min(100, +p || 0)) + '%"></i></div>'; };
+    var pulled = k.avg != null && k.median ? k.avg > 1.5 * k.median : false;
+    var head = '<div class="dbar" style="margin-bottom:8px"><div><b style="font-size:14px">Link tracker</b> <span class="t2" style="font-size:12.5px">· live counts from ' +
+      esc(t.tracker.map(function (c) { return (SRC_NAME[c.source] || c.source) + " (" + fmt(c.links) + " links)"; }).join(" + ")) + ' · updated ' + esc(last ? etTime(last) : "—") + '</span></div>' +
+      '<button class="btn btn-ghost sm" type="button" data-trk-refresh>Refresh now</button></div>';
+    var tiles = '<div class="stats" style="border:1px solid var(--border);border-radius:12px;margin-bottom:12px">' +
+      stat("Total views", fmt(k.views), k.goal ? esc(k.pct) + "% of the " + kfmt(k.goal) + " goal" + bar(k.pct) : "no views goal set", "", true) +
+      stat("Videos", fmt(k.videos), fmt(k.counted) + " with counts · " + nWord(k.creators, "creator")) +
+      stat("Average per video", k.avg == null ? "—" : fmt(k.avg), pulled ? "pulled up by viral videos" : "mean of videos with counts") +
+      stat("Typical video", k.median == null ? "—" : fmt(k.median), "median: what most videos get") +
+      stat("Viral videos", fmt(k.viral), (k.viral_pct == null ? "—" : esc(k.viral_pct) + "% of videos") + " · ≥" + fmt(t.viral_x) + "x the creator's normal") +
+      stat("Likes · comments · shares", kfmt(k.likes) + " · " + kfmt(k.comments) + " · " + kfmt(k.shares), k.views ? "likes " + (Math.round(1000 * k.likes / k.views) / 10) + "% of views" : "") +
+      '</div>';
+    var post = DT.trk !== "gained", pl = t.platforms;
+    var cols = t.days.map(function (d) {
+      var tot = post ? d.views : d.gained;
+      return { label: mday(d.day), shade: d.buffer, hl: d.today, line: null,
+        stacks: post ? pl.map(function (p) { return { v: (d.by_platform || {})[p], fill: plc(p) }; }) : [{ v: d.gained, fill: "#1bab55" }],
+        tip: mday(d.day) + (d.buffer ? " (buffer day)" : "") + (d.today ? " (today)" : "") + "\n" +
+          (post ? pl.map(function (p) { return cap(p) + ": " + fmt((d.by_platform || {})[p] || 0); }).join("\n") + "\nTotal: " + fmt(tot) : "Views gained: " + fmt(tot)) };
+    });
+    var legend = '<div class="legend">' + (post ? pl.map(function (p) { return '<span><i style="background:' + plc(p) + '"></i>' + esc(cap(p)) + '</span>'; }).join("")
+      : '<span><i style="background:#1bab55"></i>Views gained</span>') + '<span><i style="background:#f4f5f7;border:1px solid #e5e8ec"></i>Buffer days</span></div>';
+    var w = Math.max(280, Math.floor((avail("dt-overview") - 12) / (window.innerWidth > 1100 ? 2 : 1)));
+    var charts = '<div style="display:grid;grid-template-columns:' + (window.innerWidth > 1100 ? "1fr 1fr" : "1fr") + ';gap:14px;margin-bottom:12px">' +
+      '<div style="min-width:0"><div class="dbar"><b style="font-size:13px">Views per day</b>' + seg("trk", [["post", "By posting day"], ["gained", "Gained per day"]], DT.trk) + '</div>' + legend +
+        '<p class="hint" style="margin:4px 0">' + (post ? "Each video's views counted on the day it was posted." : "Real growth: each day's rise in views across all tracked links.") + '</p>' +
+        svgBars(cols, { w: w, label: "Views per day" }) + '</div>' +
+      '<div style="min-width:0"><div class="dbar"><b style="font-size:13px">Running total</b></div>' +
+        '<div class="legend"><span><i style="background:#1bab55"></i>Views so far</span>' + (k.goal ? '<span><i style="background:none;border-top:2px dashed #0f1216;border-radius:0;height:0;width:14px"></i>Path to the ' + kfmt(k.goal) + ' goal</span>' : '') + '</div>' +
+        '<p class="hint" style="margin:4px 0">Cumulative views by posting day against a straight path to the goal.</p>' + svgCum(t.days, w) + '</div></div>';
+    var vir = t.viral_links.length ? '<details style="margin-bottom:12px"><summary class="t2" style="font-size:12.5px;cursor:pointer">Top viral videos (' + fmt(t.viral_links.length) + ')</summary>' +
+      '<div style="margin-top:6px">' + t.viral_links.map(function (v) {
+        return '<div style="display:flex;gap:10px;align-items:center;padding:4px 0;border-bottom:1px solid var(--border);font-size:13px">' + pf(v.platform) +
+          '<b style="min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(v.creator || "?") + '</b>' +
+          '<span>' + fmt(v.views) + ' views</span><span class="t2">' + (v.normal ? Math.round(v.views / v.normal) + "x normal" : "") + '</span>' + ulink(v.url) + '</div>';
+      }).join("") + '</div></details>' : '';
+    var warn = (t.missing || []).length || errs.length ? '<p class="hint" style="color:var(--danger)">' +
+      ((t.missing || []).length ? "Not tracked yet: " + esc(t.missing.map(function (m) { return (SRC_NAME[m.source] || m.source) + " " + m.ref; }).join(", ")) + ' <button class="btn btn-ghost sm" type="button" data-trk-import>Track it</button> ' : "") +
+      (errs.length ? "Last refresh failed: " + esc(errs.map(function (c) { return c.name + ": " + c.error; }).join("; ")) : "") + '</p>' : '';
+    return '<div style="margin-bottom:6px">' + head + warn + tiles + charts + vir + '</div>';
+  }
+  function svgCum(days, w) {   // running total vs straight path to the goal; same geometry as svgBars
+    if (!days.length) return '<p class="hint">No days to chart yet.</p>';
+    var L = 46, T = 10, H = 190, B = 22, cw = Math.max(30, Math.floor((w - L) / days.length)), W = L + days.length * cw, max = 0;
+    days.forEach(function (d) { max = Math.max(max, +d.cumulative || 0, +d.goal_line || 0); });
+    var top = niceMax(max || 1), y = function (v) { return T + H - v / top * H; }, x = function (i) { return L + i * cw + cw / 2; }, g = "";
+    days.forEach(function (d, i) { if (d.buffer) g += '<rect x="' + (L + i * cw) + '" y="' + T + '" width="' + cw + '" height="' + H + '" fill="#f4f5f7"/>'; });
+    for (var i = 0; i <= 4; i++) { var v = top * i / 4; g += '<line x1="' + L + '" x2="' + W + '" y1="' + y(v) + '" y2="' + y(v) + '" stroke="#e5e8ec"/><text x="' + (L - 6) + '" y="' + (y(v) + 3) + '" text-anchor="end">' + kfmt(v) + '</text>'; }
+    var act = [], goal = [];
+    days.forEach(function (d, i) { if (d.cumulative != null) act.push([x(i), y(d.cumulative), d]); if (d.goal_line != null) goal.push(x(i) + "," + y(d.goal_line)); });
+    if (act.length) {
+      g += '<polygon points="' + act[0][0] + "," + y(0) + " " + act.map(function (p) { return p[0] + "," + p[1]; }).join(" ") + " " + act[act.length - 1][0] + "," + y(0) + '" fill="rgba(27,171,85,.12)"/>';
+      g += '<polyline points="' + act.map(function (p) { return p[0] + "," + p[1]; }).join(" ") + '" fill="none" stroke="#1bab55" stroke-width="2"/>';
+      act.forEach(function (p) { g += '<circle cx="' + p[0] + '" cy="' + p[1] + '" r="3" fill="#1bab55"><title>' + esc(mday(p[2].day) + "\nViews so far: " + fmt(p[2].cumulative) + (p[2].goal_line != null ? "\nGoal path: " + fmt(p[2].goal_line) : "")) + '</title></circle>'; });
+    }
+    if (goal.length > 1) g += '<polyline points="' + goal.join(" ") + '" fill="none" stroke="#0f1216" stroke-width="1.5" stroke-dasharray="4 3"/>';
+    var every = Math.ceil(30 / cw * 1.6);
+    days.forEach(function (d, i) { if (i % every === 0 || d.today) g += '<text x="' + x(i) + '" y="' + (T + H + 14) + '" text-anchor="middle"' + (d.today ? ' style="fill:#1bab55;font-weight:700"' : '') + '>' + esc(mday(d.day)) + '</text>'; });
+    return '<div class="chart"><svg width="' + W + '" height="' + (T + H + B) + '" viewBox="0 0 ' + W + ' ' + (T + H + B) + '" style="width:' + W + 'px" role="img" aria-label="Running total">' + g + '</svg></div>';
+  }
+  function trkImport() {
+    var c = auCamp(ac.id) || {}, miss = TRK && (TRK.missing && TRK.missing.length ? TRK.missing : TRK.refs) || [];
+    return Promise.all(miss.map(function (r) {
+      return req("POST", "/api/sources/" + r.source + "/import", { ref: r.ref, name: c.name || "", views_goal: c.views_goal || null });
+    })).then(function (rs) {
+      toast("Tracking " + fmt(rs.reduce(function (a, r) { return a + (r.links || 0); }, 0)) + " links. History fills in over the next minute.", "ok");
+      return loadTracker(ac.id);
+    });
+  }
+  function trkRefresh() {
+    return Promise.all(((TRK && TRK.tracker) || []).map(function (c) { return req("POST", "/api/tracker/campaigns/" + c.id + "/refresh"); }))
+      .then(function () { toast("Tracker refreshed.", "ok"); return loadTracker(ac.id); });
   }
   function niceMax(m) {
     var p = Math.pow(10, Math.floor(Math.log10(m))), k = [1, 2, 2.5, 5, 10].find(function (x) { return m <= x * p; });
@@ -4827,6 +4929,11 @@
       DT.vq = f.value; DT.vn = 60; renderDetail();
       var n = $("dt-videos").querySelector("[data-vq]"); if (n) { n.focus(); n.setSelectionRange(n.value.length, n.value.length); }
     }, 200);
+  });
+  $("dt-trk").addEventListener("click", function (e) {   // Phase 2 tracker panel buttons
+    var b = e.target.closest("[data-trk-import],[data-trk-refresh]"); if (!b) return;
+    busy(b, true);
+    (b.hasAttribute("data-trk-import") ? trkImport() : trkRefresh()).catch(function (er) { busy(b, false); toast(er.message, "err"); });
   });
   $("dt-tabs").addEventListener("scroll", function () { this.classList.toggle("end", this.scrollLeft + this.clientWidth >= this.scrollWidth - 4); });
   $("ac-dash-card").addEventListener("change", function (e) {

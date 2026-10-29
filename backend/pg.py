@@ -17,6 +17,7 @@ import urllib.parse
 log = logging.getLogger("pg")
 
 DB_URL = os.environ.get("DATABASE_URL", "")
+SNAP_GAP = 600   # s: a link gets at most one live snapshot per 10 min (boot sweep + manual refresh)
 _pool = None
 
 SCHEMA = """
@@ -190,10 +191,13 @@ async def import_pull(source: str, ref: str, name: str, company: str,
                     l.get("title") or "", l.get("thumbnail") or "", l.get("uploaded_at"), now)
                 n_links += 1
                 if any(l.get(k) is not None for k in ("views", "likes", "comments", "shares")):
-                    res = await c.execute(
+                    res = await c.execute(   # min gap: no second live snapshot within SNAP_GAP s
                         """INSERT INTO tracker_post_snapshots (link_id, t, views, likes, comments, shares)
-                           VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (link_id, t) DO NOTHING""",
-                        link_id, now, l.get("views"), l.get("likes"), l.get("comments"), l.get("shares"))
+                           SELECT $1::bigint, $2::bigint, $3::bigint, $4::bigint, $5::bigint, $6::bigint
+                           WHERE NOT EXISTS (SELECT 1 FROM tracker_post_snapshots
+                                             WHERE link_id = $1::bigint AND t > $2::bigint - $7::bigint)
+                           ON CONFLICT (link_id, t) DO NOTHING""",
+                        link_id, now, l.get("views"), l.get("likes"), l.get("comments"), l.get("shares"), SNAP_GAP)
                     n_snaps += res.endswith(" 1")
     return {"campaign_id": cid, "links": n_links, "creators": n_creators, "snapshots": n_snaps}
 
@@ -203,6 +207,37 @@ async def list_campaigns() -> list[dict]:
     rows = await pool.fetch(
         """SELECT c.*, (SELECT COUNT(*) FROM tracker_links l WHERE l.campaign_id = c.id) AS link_count
            FROM tracker_campaigns c ORDER BY c.created_at DESC""")
+    return [dict(r) for r in rows]
+
+
+async def find_campaign(source: str, ref: str) -> dict | None:
+    pool = await _require()
+    r = await pool.fetchrow(
+        """SELECT c.*, (SELECT COUNT(*) FROM tracker_links l WHERE l.campaign_id = c.id) AS link_count
+           FROM tracker_campaigns c WHERE c.source = $1 AND c.source_ref = $2""", source, str(ref))
+    return dict(r) if r else None
+
+
+async def campaign_rows(cids: list[int]) -> list[dict]:
+    """Every link of these tracker campaigns with its latest snapshot's counts."""
+    pool = await _require()
+    rows = await pool.fetch(
+        """SELECT l.id, l.campaign_id, l.url, l.platform, l.uploaded_at, l.thumbnail, l.title,
+                  cr.name AS creator_name, s.views, s.likes, s.comments, s.shares, s.t AS seen_at
+           FROM tracker_links l
+           LEFT JOIN tracker_creators cr ON cr.id = l.creator_id
+           LEFT JOIN LATERAL (SELECT views, likes, comments, shares, t FROM tracker_post_snapshots
+                              WHERE link_id = l.id ORDER BY t DESC LIMIT 1) s ON TRUE
+           WHERE l.campaign_id = ANY($1::bigint[])""", cids)
+    return [dict(r) for r in rows]
+
+
+async def campaign_snapshots(cids: list[int]) -> list[dict]:
+    pool = await _require()
+    rows = await pool.fetch(
+        """SELECT s.link_id, s.t, s.views FROM tracker_post_snapshots s
+           JOIN tracker_links l ON l.id = s.link_id
+           WHERE l.campaign_id = ANY($1::bigint[]) ORDER BY s.link_id, s.t""", cids)
     return [dict(r) for r in rows]
 
 
