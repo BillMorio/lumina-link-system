@@ -4062,6 +4062,10 @@
         '<details class="adv"><summary>Edit the source list (advanced)</summary>' + inp("sref", "Source reference", v.source_ref, "").replace("<div>", '<div style="margin-top:8px">') + '</details></div>'
         : inp("sref", "Source reference", v.source_ref, "")) +
       '<p class="hint full" id="ae-sref-h" style="margin-top:-8px"></p>' +
+      '<div class="full" id="ae-pick-wrap" hidden style="margin-top:-4px"><label class="flab" for="ae-pick">Pick from <span id="ae-pick-src"></span></label>' +
+        '<div style="display:flex;gap:8px;align-items:center"><select class="sel-in" id="ae-pick" style="flex:1"><option value="">Loading…</option></select>' +
+        '<button type="button" class="btn" id="ae-pull" style="white-space:nowrap">Pull data</button></div>' +
+        '<div id="ae-pull-out" class="hint" style="margin-top:8px"></div></div>' +
       inp("goal", "Views goal", v.views_goal, 'inputmode="numeric" placeholder="4000000"') +
       inp("creators", "Total creators uploading", v.creators_planned, 'inputmode="numeric" placeholder="10"') +
       inp("start", "Start date", v.start_date, 'type="date"') + inp("end", "End date", v.end_date, 'type="date"') +
@@ -4189,6 +4193,41 @@
     });
     el.querySelectorAll('select[id^="ae-s-"]').forEach(function (s) { svcPicker(s); s.addEventListener("change", paint); });   // picker change events do not bubble
     onPlats().forEach(fill); link(null); paint();
+    // Plan A: source picker + live "Pull" preview (SideShift / Clippers)
+    function loadPicker() {
+      var src = val("source"), wrap = q("#ae-pick-wrap"), sel = q("#ae-pick");
+      if (src !== "clippers" && src !== "sideshift") { wrap.hidden = true; return; }
+      wrap.hidden = false; q("#ae-pick-src").textContent = SRC_NAME[src] || src; q("#ae-pull-out").innerHTML = "";
+      sel.innerHTML = '<option value="">Loading…</option>';
+      api(src === "sideshift" ? "/api/sources/sideshift/programs" : "/api/clippers/campaigns").then(function (r) {
+        var list = src === "sideshift" ? (r.programs || []) : (r.campaigns || []);
+        sel.innerHTML = '<option value="">— pick a ' + (src === "sideshift" ? "program" : "campaign") + " —</option>" +
+          list.map(function (c) {
+            var extra = src === "sideshift" ? (c.company ? " · " + c.company : "") : (c.submission_count != null ? " · " + c.submission_count + " posts" : "");
+            return '<option value="' + esc(String(c.id)) + '">' + esc((c.name || ("#" + c.id)) + extra) + "</option>";
+          }).join("");
+      }).catch(function (e) { sel.innerHTML = '<option value="">Could not load (' + esc(e.message) + ")</option>"; });
+    }
+    q("#ae-pick").addEventListener("change", function () { if (this.value) q("#ae-sref").value = this.value; });
+    q("#ae-pull").addEventListener("click", function () {
+      var src = val("source"), ref = q("#ae-pick").value || val("sref"), out = q("#ae-pull-out"), btn = this;
+      if (!ref) { out.innerHTML = "Pick a " + (src === "sideshift" ? "program" : "campaign") + " first."; return; }
+      busy(btn, true); out.textContent = "Pulling…";
+      api("/api/sources/" + src + "/preview?ref=" + encodeURIComponent(ref)).then(function (r) {
+        busy(btn, false);
+        var t = r.totals || {}, pl = t.platforms || [];
+        if (t.creators) q("#ae-creators").value = t.creators;
+        pl.forEach(function (p) { var cb = q('[data-on="' + p + '"]'); if (cb && !cb.checked) { cb.checked = true; cb.dispatchEvent(new Event("change", { bubbles: true })); } });
+        var rows = (r.links || []).slice(0, 10).map(function (l) {
+          return '<div style="display:flex;justify-content:space-between;gap:10px;padding:2px 0"><span>' + esc(l.creator || "?") + ' <span class="t2">· ' + esc(l.platform || "?") + '</span></span><span class="t2">' + (l.views != null ? fmt(l.views) + " views" : "") + "</span></div>";
+        }).join("");
+        out.innerHTML = "<b>Pulled " + fmt(t.links || 0) + " links · " + fmt(t.creators || 0) + " creators · " + (pl.join(", ") || "—") + "</b>" +
+          (r.capped ? ' <span class="t2">(preview capped at ~300)</span>' : "") +
+          '<div style="margin-top:6px;max-height:170px;overflow:auto">' + rows + ((r.links || []).length > 10 ? '<div class="t2">…and ' + ((r.links || []).length - 10) + " more</div>" : "") + "</div>";
+        paint();
+      }).catch(function (e) { busy(btn, false); out.innerHTML = '<span style="color:#e5484d">Pull failed: ' + esc(e.message) + "</span>"; });
+    });
+    q("#ae-source").addEventListener("change", loadPicker); loadPicker();
     function submit(d, btn) {
       var b;
       try {

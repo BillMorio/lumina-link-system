@@ -622,6 +622,97 @@ async def clippers_campaigns(_: str = Depends(require_auth)):
     return {"campaigns": [{**c, "linked": c["id"] in linked} for c in rows]}
 
 
+# --------------------------------------------------------------------------- #
+# Source pickers (Plan A): list campaigns/programs for the automation modal's
+# dropdown, and pull a chosen one's creators + links (the posts) for preview.
+# Read-only; nothing is stored. Persisting links is Plan B (link-centric DB).
+# --------------------------------------------------------------------------- #
+@app.get("/api/sources/sideshift/programs")
+async def sideshift_programs(_: str = Depends(require_auth)):
+    import sources
+    try:
+        data = await sources._ss_get("/campaigns", {"limit": 100})
+    except sources.SourceError as e:
+        raise HTTPException(502, str(e))
+    out = [{"id": c.get("id") or c.get("programId"), "name": c.get("name") or "",
+            "company": c.get("companyName") or "", "status": c.get("status") or "",
+            "posts": c.get("expectedTotalPosts")}
+           for c in (data or []) if (c.get("id") or c.get("programId"))]
+    return {"programs": out}
+
+
+@app.get("/api/sources/{source}/preview")
+async def source_preview(source: str, ref: str = Query(...), _: str = Depends(require_auth)):
+    """Pull a program/campaign's creators + links for the modal preview.
+    Capped at ~300 posts so the preview stays snappy."""
+    import sources
+    source = source.lower().strip()
+    links: list[dict] = []
+    capped = False
+    try:
+        if source == "sideshift":
+            for page in range(1, 4):
+                d = await sources._ss_get("/analytics/videos", {"programId": ref, "limit": 100, "page": page})
+                got = d.get("data") or []
+                for it in got:
+                    if sources.ss_deleted(it):
+                        continue
+                    url = it.get("postPage") or ""
+                    if not url:
+                        continue
+                    links.append({"url": url, "platform": sources.ss_platform(it) or "",
+                                  "creator": it.get("contractorName") or it.get("creator") or "",
+                                  "views": it.get("views"), "likes": it.get("likes"),
+                                  "comments": it.get("comments"),
+                                  "uploaded_at": it.get("uploadedAt"), "thumbnail": it.get("thumbnail") or ""})
+                tp = d.get("totalPages")
+                if not got or (tp is not None and page >= int(tp)):
+                    break
+                if page == 3:
+                    capped = tp is None or int(tp) > 3
+        elif source == "clippers":
+            try:
+                cid = int(ref)
+            except ValueError:
+                raise HTTPException(400, "clippers ref must be a campaign id")
+            page = 1
+            while page <= 3:
+                d = await clippers._get(f"/api/campaigns/{cid}/submissions", {"page": page, "per_page": 100})
+                for s in d.get("items", []):
+                    url = s.get("post_url") or ""
+                    if not url:
+                        continue
+                    plat = (s.get("platform") or "").lower()
+                    links.append({"url": url, "platform": "x" if plat == "twitter" else plat,
+                                  "creator": s.get("clipper_name") or s.get("clipper_email") or "",
+                                  "views": None, "likes": None, "comments": None,
+                                  "uploaded_at": sources._epoch(s.get("created_at")), "thumbnail": ""})
+                pages = int(d.get("pages") or 1)
+                if page >= pages:
+                    break
+                page += 1
+                if page > 3:
+                    capped = True
+        else:
+            raise HTTPException(400, "source must be 'sideshift' or 'clippers'")
+    except sources.SourceError as e:
+        raise HTTPException(502, str(e))
+    except clippers.ClippersError as e:
+        raise HTTPException(502, str(e))
+
+    creators: dict[str, int] = {}
+    plats: dict[str, int] = {}
+    for l in links:
+        c = l["creator"] or "?"
+        creators[c] = creators.get(c, 0) + 1
+        if l["platform"]:
+            plats[l["platform"]] = plats.get(l["platform"], 0) + 1
+    return {"source": source, "ref": ref, "capped": capped,
+            "totals": {"links": len(links), "creators": len(creators), "platforms": sorted(plats)},
+            "creators": [{"name": k, "links": v} for k, v in sorted(creators.items(), key=lambda x: -x[1])][:100],
+            "links": links[:200]}
+
+
 class LinkBody(BaseModel):
     campaign_id: int
     campaign_name: str = ""
