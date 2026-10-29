@@ -5343,9 +5343,9 @@
     var user = $("lg-user").value.trim(), code = $("lg-code").value;
     var err = $("lg-err"); err.textContent = "";
     if (!base) { err.textContent = "Enter the API address, or choose Explore demo."; return; }
-    if (!user || !code) { err.textContent = "Enter your username and password."; return; }
+    if (!code) { err.textContent = "Enter your username and password (or just the access code)."; return; }
     var btn = this; busy(btn, true);
-    fetch(base + "/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: user, password: code }) })
+    fetch(base + "/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(user ? { username: user, password: code } : { username: "", password: "", code: code }) })
       .then(function (r) { if (!r.ok) throw new Error("Wrong username or password."); return r.json(); })
       .then(function (j) {
         API_BASE = base; TOKEN = j.token; USER = j.user || user; $("lg-code").value = "";
