@@ -203,6 +203,7 @@
   .stat .lab { font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .stat .big { font-size: 28px; font-weight: 800; letter-spacing: -.02em; font-variant-numeric: tabular-nums; margin-top: 4px; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .stat .big.money { color: var(--accent); }
+  .stat .big.fit { font-size: 18px; white-space: normal; line-height: 1.35; }
   .stat .big.wait { color: var(--wait); }
   .stat .sub { font-size: 12.5px; color: var(--text-muted); margin-top: 2px; overflow-wrap: anywhere; }
 
@@ -4694,8 +4695,8 @@
       stat("Average per video", k.avg == null ? "—" : fmt(k.avg), pulled ? "pulled up by viral videos" : "mean of videos with counts") +
       stat("Typical video", k.median == null ? "—" : fmt(k.median), "median: what most videos get") +
       stat("Viral videos", fmt(k.viral), (k.viral_pct == null ? "—" : esc(k.viral_pct) + "% of videos") + " · ≥" + fmt(t.viral_x) + "x the creator's normal") +
-      stat("Engagement", '<span style="font-size:20px">' + kfmt(k.likes) + " · " + kfmt(k.comments) + " · " + kfmt(k.shares) + '</span>',
-        "likes · comments · shares" + (k.views ? " · likes " + (Math.round(1000 * k.likes / k.views) / 10) + "% of views" : "")) +
+      stat("Engagement", kfmt(k.likes) + " · " + kfmt(k.comments) + " · " + kfmt(k.shares),
+        "likes · comments · shares" + (k.views ? " · likes " + (Math.round(1000 * k.likes / k.views) / 10) + "% of views" : ""), "fit") +
       '</div>';
     var post = DT.trk !== "gained", pl = t.platforms;
     var cols = t.days.map(function (d) {
