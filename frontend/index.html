@@ -4880,8 +4880,14 @@
   function openLink(lid) {
     var dl = dialog({ title: "Link detail", sub: "loading…", wide: true, cls: "xwide", body: '<div class="blk"><span class="sk" style="width:60%;height:22px"></span></div>', actions: [{ label: "Close" }] });
     var cid = ac.id, base = "/api/auto/campaigns/" + cid;
-    function reload() { return req("GET", base + "/tracker/links/" + lid).then(function (r) { linkBody(dl, r); }); }
+    var real = null;
+    function reload() { return req("GET", base + "/tracker/links/" + lid).then(function (r) { real = r; linkBody(dl, r); }); }
     reload().catch(function (e) { setDlgBody(dl, blockFail(e, "Could not load this link", "link")); });
+    dl.el.addEventListener("click", function (e) {   // sample week of orders (frontend only)
+      if (!real) return;
+      if (e.target.closest("[data-demo-orders]")) { linkBody(dl, demoLink(real)); dl.el.querySelector(".dlg-b").scrollTop = 0; }
+      else if (e.target.closest("[data-demo-off]")) linkBody(dl, real);
+    });
     dl.el.addEventListener("click", function (e) {   // Phase 5 AI comment actions
       var b = e.target.closest("[data-ai-gen],[data-sg],[data-brief-save]"); if (!b) return;
       var out = dl.el.querySelector("[data-ai-msg]"), say = function (h) { if (out) out.innerHTML = h; };
@@ -4955,10 +4961,35 @@
             return '<tr><td>' + st(tb[2], tb[1]) + (o.error ? '<div class="t2" style="max-width:240px;white-space:normal">' + esc(o.error) + '</div>' : '') + '</td><td>' + esc(cap(o.kind)) + (o.is_test ? ' <span class="t2">(test)</span>' : '') +
               ((o.comments || []).length ? '<details class="t2"><summary>' + fmt(o.comments.length) + ' lines</summary>' + o.comments.map(function (c) { return '<div>' + esc(c) + '</div>'; }).join("") + '</details>' : '') +
               '</td><td>' + fmt(o.qty) + '</td><td>' + esc(provLabel(o.provider || "") + " · " + (o.service || "")) + '</td><td>' + esc(etTime(o.created_at)) + '</td><td class="t2">' + esc(o.order_id || "—") + '</td></tr>'; }).join("") +
-          '</tbody></table></div>' : '<p class="hint">No orders placed for this post yet' + (p ? "" : " — the planner has not picked it up") + '.</p>') + '</div>' +
+          '</tbody></table></div>' : '<p class="hint">No orders placed for this post yet' + (p ? "" : " — the planner has not picked it up") + '. ' +
+            '<button class="btn btn-ghost sm" type="button" data-demo-orders>See a sample week (10 orders)</button></p>') + '</div>' +
       '<div style="margin-top:12px"><b style="font-size:13px">Comments posted</b>' +
         (r.comments.length ? '<div style="margin-top:6px">' + r.comments.map(function (c) { return '<div style="padding:5px 0;border-bottom:1px solid var(--border);font-size:13px">' + esc(c.text) + ' <span class="t2" style="font-size:12px">· ' + esc(etTime(c.at)) + '</span></div>'; }).join("") + '</div>'
-          : '<p class="hint">No comment lines posted on this video yet.</p>') + '</div>' + aiHtml(r));
+          : '<p class="hint">No comment lines posted on this video yet.</p>') + '</div>' + (r.demo ? "" : aiHtml(r)));
+    if (r.demo) setDlgBody(dl, '<div class="t2" style="background:var(--wait-bg,#fff4e0);border:1px solid var(--wait,#f08c00);border-radius:10px;padding:8px 12px;margin-bottom:10px;font-size:12.5px">' +
+      '<b>Sample data</b> · a made-up week of 10 orders on this link to show the layout; nothing here is real. <button class="btn btn-ghost sm" type="button" data-demo-off>Back to the real link</button></div>' +
+      dl.el.querySelector(".dlg-b").innerHTML);
+  }
+  function demoLink(r) {   // a fake week: 6 views top-ups, 2 likes, 2 custom-comment orders, one stuck, one failed
+    var now = Math.floor(Date.now() / 1000), H = 3600, D = 86400, posted = now - 7 * D;
+    var L1 = ["🔥🔥🔥", "no way he hit that 😭", "the timing on this lol", "😂😂", "ok this one got me"], L2 = ["that last bit 💀", "🙌🙌", "how is this real", "watched it 4 times", "👏🔥"];
+    var O = [["stuck", "views", 5000, "smmglow", "4417", 31 * H, "8821904", "panel still says In progress after 31h"],
+      ["in_progress", "views", 4000, "smmglow", "4417", 3 * H, "8834410"], ["in_progress", "comments", 5, "morethanpanel", "8793", 2 * H, "5331207", null, L2],
+      ["fulfilled", "views", 5000, "smmglow", "4417", 2 * D, "8812233"], ["fulfilled", "likes", 250, "justanotherpanel", "9311", 2 * D - 2 * H, "1290455"],
+      ["fulfilled", "views", 5000, "smmglow", "4417", 4 * D, "8790012"], ["fulfilled", "comments", 5, "justanotherpanel", "3382", 4 * D - 3 * H, "1288170", null, L1],
+      ["fulfilled", "views", 3000, "smmglow", "4417", 5 * D, "8771540"], ["fulfilled", "likes", 150, "justanotherpanel", "9311", 6 * D, "1284002"],
+      ["failed", "views", 3000, "morethanpanel", "6120", 6 * D - 5 * H, null, "panel rejected: Not enough funds on balance"]].map(function (o) {
+      return { bucket: o[0], kind: o[1], qty: o[2], provider: o[3], service: o[4], created_at: now - o[5], order_id: o[6], error: o[7] || null, comments: o[8] || [] }; });
+    var sum = {}; O.forEach(function (o) { var s = sum[o.bucket] = sum[o.bucket] || { orders: 0, qty: 0 }; s.orders++; s.qty += o.qty; });
+    var snaps = [];
+    for (var t = posted + 2 * H; t <= now; t += 4 * H) {
+      var age = (t - posted) / D, v = Math.round(1800 * Math.log1p(age * 3) + 0.92 * ((age > 2 ? 3000 : 0) + (age > 3 ? 5000 : 0) + (age > 5 ? 5000 : 0)));
+      snaps.push({ t: t, views: v, likes: Math.round(v * 0.045) });
+    }
+    var last = snaps[snaps.length - 1];
+    return { demo: true, link: Object.assign({}, r.link, { uploaded_at: posted }), actual: { views: last.views, likes: last.likes, comments: 31, shares: 12, t: last.t },
+      post: { target_total: 30000 }, order_summary: sum, orders: O, stuck_h: r.stuck_h || 24, snapshots: snaps,
+      comments: L1.map(function (c, i) { return { text: c, at: now - 4 * D + 4 * H + i * 1200 }; }) };
   }
   function niceMax(m) {
     var p = Math.pow(10, Math.floor(Math.log10(m))), k = [1, 2, 2.5, 5, 10].find(function (x) { return m <= x * p; });
